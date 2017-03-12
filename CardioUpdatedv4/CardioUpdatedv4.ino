@@ -190,7 +190,6 @@ void setup() {
     calibrateMonitor();
     drawGrid();
     tft.begin();
-    bFilt = filter1_create();
   } else {
     // Read from the SD card for playback
     //root = sd.open("/");
@@ -242,7 +241,7 @@ int selectFile() {
       tft.setTextColor(ILI9341_BLACK);
       sf++;
       tft.print(sf);
-      delay(800);
+      delay(500);
     }
     if (!digitalRead(21)) {
       if (sf != 0) {
@@ -253,15 +252,16 @@ int selectFile() {
         tft.setTextColor(ILI9341_BLACK);
         sf--;
         tft.print(sf);
-        delay(800);
+        delay(500);
       }
     }
     if (!digitalRead(BSTART)) {
       int butCount = 0;
       while (!digitalRead(BSTART)) {
         butCount++;
-        if (butCount > 1000000) {
+        if (butCount > 200000) {
           accept = 1;
+          return sf;
         }
       }
     }
@@ -306,17 +306,21 @@ void chooseMode() {
   tft.setRotation(0);
   tft.setTextSize(3);
   tft.setTextColor(ILI9341_BLACK);
+  tft.fillScreen(ILI9341_WHITE);
+  tft.setCursor(20, 100);
+  tft.print("Select Mode:");
   while (!modeSelect) {
     if (modeSelect) {
       return;
     }
-    tft.fillScreen(ILI9341_WHITE);
-    tft.setCursor(20, 100);
-    tft.print("Select Mode:");
-    int timer = millis();
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(20, 140);
+    tft.print("Record [Y]");
+    tft.setTextColor(ILI9341_BLACK);
     tft.setCursor(20, 140);
     tft.print("Playback [Y]");
-    while (!modeSelect && millis() - timer <= 5000) {
+    delay(500);
+    while (!modeSelect && digitalRead(22) && digitalRead(21)) {
       if (!digitalRead(23)) {
         modeSelect = 1;
         playBackMode = 1;
@@ -325,13 +329,14 @@ void chooseMode() {
     if (modeSelect) {
       return;
     }
-    tft.fillScreen(ILI9341_WHITE);
-    timer = millis();
-    tft.setCursor(20, 100);
-    tft.print("Select Mode:");
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(20, 140);
+    tft.print("Playback [Y]");
+    tft.setTextColor(ILI9341_BLACK);
     tft.setCursor(20, 140);
     tft.print("Record [Y]");
-    while (!modeSelect && millis() - timer <= 5000) {
+    delay(500);
+    while (!modeSelect && digitalRead(22) && digitalRead(21)) {
       if (!digitalRead(23)) {
         modeSelect = 1;
         playBackMode = 0;
