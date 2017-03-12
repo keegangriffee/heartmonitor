@@ -180,19 +180,7 @@ void setup() {
 // Select File to Open
 ////////////////////////////////////////////////////
 int selectFile() {
-  ArduinoOutStream cout(Serial);
-  sd.vwd()->rewind();
-  while (myFile.openNext(sd.vwd(), O_READ)) {
-    if (!myFile.isHidden()) {
-      myFile.printName(&Serial);
-      //char fBuffer[13];
-      //myFile.getName(fBuffer, 13);
-      //tft.print(fBuffer);
-      cout << endl;
-    }
-    myFile.close();
-  }
-  cout << "\nDone!" << endl;
+  printDirectory();
   tft.fillScreen(ILI9341_WHITE);
   tft.setRotation(0);
   tft.setTextSize(2);
@@ -219,7 +207,6 @@ int selectFile() {
       if (myFile.openNext(sd.vwd(), O_READ)) {
         while (myFile.isHidden()) {
           myFile.close();
-          sf++;
           if (!myFile.openNext(sd.vwd(), O_READ)) {
             break;
           }
@@ -286,27 +273,20 @@ int selectFile() {
 ////////////////////////////////////////////////////
 // Directory Printing
 ////////////////////////////////////////////////////
-void printDirectory(File dir, int numTabs) {
-  while (true) {
-    File entry =  dir.openNextFile();
-    if (! entry) {
-      // no more files
-      break;
+void printDirectory() {
+  ArduinoOutStream cout(Serial);
+  sd.vwd()->rewind();
+  while (myFile.openNext(sd.vwd(), O_READ)) {
+    if (!myFile.isHidden()) {
+      myFile.printName(&Serial);
+      //char fBuffer[13];
+      //myFile.getName(fBuffer, 13);
+      //tft.print(fBuffer);
+      cout << endl;
     }
-    for (uint8_t i = 0; i < numTabs; i++) {
-      Serial.print('\t');
-    }
-    Serial.print(entry.name());
-    if (entry.isDirectory()) {
-      Serial.println("/");
-      printDirectory(entry, numTabs + 1);
-    } else {
-      // files have sizes, directories do not
-      Serial.print("\t\t");
-      Serial.println(entry.size(), DEC);
-    }
-    entry.close();
+    myFile.close();
   }
+  cout << "\nDone!" << endl;
 }
 
 ////////////////////////////////////////////////////
@@ -357,6 +337,9 @@ void chooseMode() {
   }
 }
 
+///////////////////////////////////////////////
+// Draws the grid
+///////////////////////////////////////////////
 // Draws the red checkered grid on the display
 void drawGrid() {
   // Draws the grid
