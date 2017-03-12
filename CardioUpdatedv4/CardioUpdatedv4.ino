@@ -27,6 +27,8 @@
 SdFat sd;
 SdFile myFile;
 
+File root;
+
 // Used to determine if we should write to an SD card
 boolean hasSDcard = false;
 
@@ -38,7 +40,13 @@ ILI9341_t3 tft = ILI9341_t3(TFT_CS, TFT_DC);
 
 #define PDB_CH0C1_TOS 0x0100
 #define PDB_CH0C1_EN 0x01
+#define BSTART 23
+#define BDOWN 21
+#define BUP 22
 
+/////////////////////////////////////////////////
+// Filter stuff
+/////////////////////////////////////////////////
 static const int filter1_numStages = 2;
 static const int filter1_coefficientLength = 10;
 extern float filter1_coefficients[10];
@@ -94,6 +102,7 @@ int playBackMode = 0;
 int currPlayBackSamp = 0;
 int totPlayBack = 0;
 int playBackSamples = sRate * 31;
+int chooseFile = 0;
 
 ////////////////////////////////////////////
 // Sample buffers
@@ -147,6 +156,8 @@ void setup() {
   pinMode(A3, INPUT);
   // Pin for start/stop button
   pinMode(23, INPUT_PULLUP);
+  pinMode(22, INPUT_PULLUP);
+  pinMode(21, INPUT_PULLUP);
   pinMode(SD_CS, OUTPUT);
   prev  = HIGH;
 
@@ -182,7 +193,107 @@ void setup() {
     bFilt = filter1_create();
   } else {
     // Read from the SD card for playback
-    readSD2();
+    //root = sd.open("/");
+    //printDirectory(root, 0);
+    int sf = selectFile();
+    //char fn[] = "KGEM000.txt";
+    char file[12] = "KGEM";
+    char buf[8] = "KGEM";
+
+    fileGen(buf + 4, sf);
+    fileGen(file + 4, sf);
+    file[7] = '.';
+    file[8] = 't';
+    file[9] = 'x';
+    file[10] = 't';
+    file[11] = '\0';
+    readSD2(file);
+  }
+}
+
+////////////////////////////////////////////////////
+// Select File to Open
+////////////////////////////////////////////////////
+int selectFile() {
+  tft.fillScreen(ILI9341_WHITE);
+  tft.setRotation(0);
+  tft.setTextSize(2);
+  tft.setTextColor(ILI9341_BLACK);
+  tft.setCursor(20, 100);
+  tft.print("Press buttons to");
+  tft.setCursor(20, 120);
+  tft.print("-/+ file");
+  tft.setCursor(20, 140);
+  tft.print("number to open");
+  tft.setCursor(20, 160);
+  tft.print("File Number: ");
+  tft.setCursor(20, 220);
+  tft.print("Hold Start To Continue");
+  int sf = 0;
+  tft.setCursor(60, 180);
+  tft.print(sf);
+  int accept = 0;
+  while (!accept) {
+    if (!digitalRead(22)) {
+      tft.setTextColor(ILI9341_WHITE);
+      tft.setCursor(60, 180);
+      tft.print(sf);
+      tft.setCursor(60, 180);
+      tft.setTextColor(ILI9341_BLACK);
+      sf++;
+      tft.print(sf);
+      delay(800);
+    }
+    if (!digitalRead(21)) {
+      if (sf != 0) {
+        tft.setTextColor(ILI9341_WHITE);
+        tft.setCursor(60, 180);
+        tft.print(sf);
+        tft.setCursor(60, 180);
+        tft.setTextColor(ILI9341_BLACK);
+        sf--;
+        tft.print(sf);
+        delay(800);
+      }
+    }
+    if (!digitalRead(BSTART)) {
+      int butCount = 0;
+      while (!digitalRead(BSTART)) {
+        butCount++;
+        if (butCount > 1000000) {
+          accept = 1;
+        }
+      }
+    }
+  }
+  return sf;
+}
+
+
+////////////////////////////////////////////////////
+// Directory Printing
+////////////////////////////////////////////////////
+void printDirectory(File dir, int numTabs) {
+  while (true) {
+
+    File entry =  dir.openNextFile();
+    if (! entry) {
+      // no more files
+      break;
+    }
+    for (uint8_t i = 0; i < numTabs; i++) {
+      Serial.print('\t');
+    }
+    Serial.print(entry.name());
+    if (entry.isDirectory()) {
+      Serial.println("/");
+      printDirectory(entry, numTabs + 1);
+    } else {
+      // files have sizes, directories do not
+      Serial.print("\t\t");
+      Serial.println(entry.size(), DEC);
+    }
+    entry.close();
   }
 }
 
@@ -273,8 +384,14 @@ void calibrateMonitor() {
     val = samples[currSamp];
     if (val < 400 || val > 3800) {
       startCal = millis();
-        tft.setCursor(20, 200);
-        tft.print("Stay Still");
+      tft.setCursor(20, 200);
+      tft.setTextColor(ILI9341_WHITE);
+      tft.print("Stay Still");
+    }
+    if (millis() - startCal > 2000) {
+      tft.setCursor(20, 200);
+      tft.setTextColor(ILI9341_BLACK);
+      tft.print("Stay Still");
     }
   }
   currSamp = 0;
@@ -459,15 +576,15 @@ int curPlayBack = 0;
 // TODO: Play with SD card recall
 // Add a button to do SD card recall while in a stopped state
 File file;
-void readSD2() {
-  file = sd.open("KGEM000.txt", FILE_WRITE);
+void readSD2(char *fn) {
+  //file = sd.open("KGEM000.txt", FILE_WRITE);
+  file = sd.open(*fn, FILE_WRITE);
   if (!file) {
     Serial.println("open failed");
     return;
   }
   file.seek(10);
-  uint16_t t1, t2, t3, t4;
-  char space, result;
+  uint16_t t1;
   while (file.available() && curPlayBack < playBackSamples) {
     if (csvReadUint16(&file, &t1, ' ') == ' ') {
       playBack[curPlayBack] = t1;
@@ -475,18 +592,6 @@ void readSD2() {
     }
   }
   file.close();
-  // DEBUG FOR READING SD CARD
-  //  int i = 0;
-  //  while (i < playBackSamples / 8) {
-  //    for (int j = 0; j < 8; j++) {
-  //      if (j != 0) {
-  //        Serial.print(" ");
-  //      }
-  //      Serial.print(playBack[8 * i + j]);
-  //    }
-  //    Serial.println();
-  //    i++;
-  //  }
   curPlayBack = 0;
 }
 
@@ -714,105 +819,4 @@ void adc0_isr() {
   } else {
     int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
   }
-}
-
-////////////////////////////////////////////////////////////////////////////
-// Filter
-////////////////////////////////////////////////////////////////////////////
-filter1Type *filter1_create( void )
-{
-  filter1Type *result = (filter1Type *)malloc( sizeof( filter1Type ) ); // Allocate memory for the object
-  filter1_init( result );                     // Initialize it
-  return result;                                // Return the result
-}
-
-void filter1_destroy( filter1Type * pObject )
-{
-  free( pObject );
-}
-
-void filter1_init( filter1Type * pThis )
-{
-  filter1_reset( pThis );
-
-}
-
-void filter1_reset( filter1Type * pThis )
-{
-  memset( &pThis->state, 0, sizeof( pThis->state ) ); // Reset state to 0
-  pThis->output = 0;                  // Reset output
-
-}
-
-int filter1_filterBlock( filter1Type * pThis, float * pInput, float * pOutput, unsigned int count )
-{
-  filter1_executionState executionState;          // The executionState structure holds call data, minimizing stack reads and writes
-  if ( ! count ) return 0;                        // If there are no input samples, return immediately
-  executionState.pInput = pInput;                 // Pointers to the input and output buffers that each call to filterBiquad() will use
-  executionState.pOutput = pOutput;               // - pInput and pOutput can be equal, allowing reuse of the same memory.
-  executionState.count = count;                   // The number of samples to be processed
-  executionState.pState = pThis->state;                   // Pointer to the biquad's internal state and coefficients.
-  executionState.pCoefficients = filter1_coefficients;    // Each call to filterBiquad() will advance pState and pCoefficients to the next biquad
-
-  // The 1st call to filter1_filterBiquad() reads from the caller supplied input buffer and writes to the output buffer.
-  // The remaining calls to filterBiquad() recycle the same output buffer, so that multiple intermediate buffers are not required.
-
-  filter1_filterBiquad( &executionState );    // Run biquad #0
-  executionState.pInput = executionState.pOutput;         // The remaining biquads will now re-use the same output buffer.
-
-  filter1_filterBiquad( &executionState );    // Run biquad #1
-  // At this point, the caller-supplied output buffer will contain the filtered samples and the input buffer will contain the unmodified input samples.
-  return count;   // Return the number of samples processed, the same as the number of input samples
-
-}
-
-void filter1_filterBiquad( filter1_executionState * pExecState )
-{
-  // Read state variables
-  float w0, x0;
-  float w1 = pExecState->pState[0];
-  float w2 = pExecState->pState[1];
-
-  // Read coefficients into work registers
-  float b0 = *(pExecState->pCoefficients++);
-  float b1 = *(pExecState->pCoefficients++);
-  float b2 = *(pExecState->pCoefficients++);
-  float a1 = *(pExecState->pCoefficients++);
-  float a2 = *(pExecState->pCoefficients++);
-
-  // Read source and target pointers
-  float *pInput  = pExecState->pInput;
-  float *pOutput = pExecState->pOutput;
-  short count = pExecState->count;
-  float accumulator;
-
-  // Loop for all samples in the input buffer
-  while ( count-- )
-  {
-    // Read input sample
-    x0 = *(pInput++);
-
-    // Run feedback part of filter
-    accumulator  = w2 * a2;
-    accumulator += w1 * a1;
-    accumulator += x0 ;
-
-    w0 = accumulator ;
-
-    // Run feedforward part of filter
-    accumulator  = w0 * b0;
-    accumulator += w1 * b1;
-    accumulator += w2 * b2;
-
-    w2 = w1;    // Shuffle history buffer
-    w1 = w0;
-
-    // Write output
-    *(pOutput++) = accumulator ;
-  }
-
-  // Write state variables
-  *(pExecState->pState++) = w1;
-  *(pExecState->pState++) = w2;
-
 }
