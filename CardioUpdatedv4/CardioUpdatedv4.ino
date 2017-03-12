@@ -18,6 +18,7 @@
 
 #include <stdlib.h>
 #include <string.h> // For memset
+#include <Filters.h>
 
 #include "SPI.h"
 #include "ILI9341_t3.h"
@@ -44,51 +45,6 @@ ILI9341_t3 tft = ILI9341_t3(TFT_CS, TFT_DC);
 #define BDOWN 21
 #define BUP 22
 
-/////////////////////////////////////////////////
-// Filter stuff
-/////////////////////////////////////////////////
-static const int filter1_numStages = 2;
-static const int filter1_coefficientLength = 10;
-extern float filter1_coefficients[10];
-
-typedef struct
-{
-  float state[8];
-  float output;
-} filter1Type;
-
-typedef struct
-{
-  float *pInput;
-  float *pOutput;
-  float *pState;
-  float *pCoefficients;
-  short count;
-} filter1_executionState;
-
-float filter1_coefficients[10] =
-{
-  // Scaled for floating point
-
-  0.14302759524247405, 0.2860551904849481, 0.14302759524247405, 0.8923452534610903, -0.22484317957421998,// b0, b1, b2, a1, a2
-  0.0625, 0.125, 0.0625, 1.1544493220854493, -0.5846101862882838// b0, b1, b2, a1, a2
-
-};
-
-#define filter1_writeInput( pThis, input )  \
-  filter1_filterBlock( pThis, &input, &pThis->output, 1 );
-
-#define filter1_readOutput( pThis )  \
-  pThis->output
-
-int filter1_filterBlock( filter1Type * pThis, float * pInput, float * pOutput, unsigned int count );
-#define filter1_outputToFloat( output )  \
-  (output)
-
-#define filter1_inputFromFloat( input )  \
-  (input)
-
-void filter1_filterBiquad( filter1_executionState * pExecState );
 
 ////////////////////////////////////////////
 // Sample Rate
@@ -117,8 +73,8 @@ uint16_t playBack[sRate * 31];
 // Keep track of samples and files
 int currSamp = 0;
 int totSamp = 0;
+int printSamp = 0;
 int currFile = 0;
-
 
 // If we are actively running
 boolean isRun;
@@ -132,7 +88,13 @@ boolean hasWritten = false;
 int prev;
 
 // Filter for baseline wander
-filter1Type* bFilt;
+#define BASELINE 1800
+float bwFreq = 0.5;
+FilterOnePole bw(HIGHPASS, bwFreq);
+
+// Filter for high frequency noise
+float nFreq = 20;
+FilterOnePole nf(LOWPASS, nFreq);
 
 // Define constants
 #define WIDTH 320
@@ -190,7 +152,6 @@ void setup() {
     calibrateMonitor();
     drawGrid();
     tft.begin();
-    bFilt = filter1_create();
   } else {
     // Read from the SD card for playback
     //root = sd.open("/");
@@ -462,10 +423,7 @@ void loop() {
   } else {
     // Actively running
     interrupts();
-
-    // Filter current data
-    float filtData[currSamp];
-
+    
     // Refresh the graph on rollaround
     if (currSamp == 0 && !playBackMode) {
       drawGrid();
@@ -500,7 +458,7 @@ void loop() {
       }
       currPlayBackSamp = (currPlayBackSamp + 1) % (sizeof(samples) / 2);
     } else {
-      for (int i = 0; i < currSamp; i++) {
+      for (int i = printSamp; i < currSamp; i++) {
         if (i != 0) {
           tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
                        (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
@@ -810,7 +768,7 @@ void pdb_isr() {
 
 void adc0_isr() {
   if (isCal || isRun) {
-    samples[currSamp] = ADC0_RA;
+    samples[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
     data[totSamp] = samples[currSamp];
     if (isRun) {
       currSamp = (currSamp + 1) % (sizeof(samples) / 2);
