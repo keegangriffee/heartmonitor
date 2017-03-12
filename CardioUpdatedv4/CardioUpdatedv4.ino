@@ -159,7 +159,6 @@ void setup() {
     // open next file in root.  The volume working directory, vwd, is root
     // define a serial output stream
     int sf = selectFile();
-    //char fn[] = "KGEM000.txt";
     char file[12] = "KGEM";
     char buf[8] = "KGEM";
 
@@ -185,19 +184,20 @@ int selectFile() {
   tft.setRotation(0);
   tft.setTextSize(2);
   tft.setTextColor(ILI9341_BLACK);
-  tft.setCursor(20, 100);
+  tft.setCursor(20, 40);
   tft.print("Press buttons to");
-  tft.setCursor(20, 120);
-  tft.print("-/+ file");
-  tft.setCursor(20, 140);
-  tft.print("number to open");
-  tft.setCursor(20, 160);
+  tft.setCursor(20, 60);
+  tft.print("navigate through");
+  tft.setCursor(20, 80);
+  tft.print("files to open");
+  tft.setCursor(20, 100);
   tft.print("File Name: ");
+  tft.setCursor(20, 200);
+  tft.print("Hold Start To");
   tft.setCursor(20, 220);
-  tft.print("Hold Start To Continue");
-  int sf = 0;
-  tft.setCursor(60, 180);
-  tft.print("KGEM000.txt");
+  tft.print("Continue");
+  int sf = -1;
+  tft.setCursor(60, 130);
   int accept = 0;
   sd.vwd()->rewind();
   char fBuffer[13];
@@ -208,64 +208,44 @@ int selectFile() {
         while (myFile.isHidden()) {
           myFile.close();
           if (!myFile.openNext(sd.vwd(), O_READ)) {
+            sf--;
             break;
           }
         }
         tft.setTextColor(ILI9341_WHITE);
-        tft.setCursor(60, 180);
+        tft.setCursor(60, 130);
         tft.print(fBuffer);
-        tft.setCursor(60, 180);
+        tft.setCursor(60, 130);
         tft.setTextColor(ILI9341_BLACK);
         myFile.getName(fBuffer, 13);
         tft.print(fBuffer);
         sf++;
+        Serial.println(sf);
         myFile.close();
       }
       //tft.print(sf);
       delay(250);
     }
     if (!digitalRead(21)) {
-      if (sf != 0) {
-        //tft.print(sf);
-        sd.vwd()->seekSet(sf - 1);
-        if (myFile.openNext(sd.vwd(), O_READ)) {
-          while (myFile.isHidden()) {
-            myFile.close();
-            sf--;
-            sd.vwd()->seekSet(sf - 1);
-            if (!myFile.openNext(sd.vwd(), O_READ)) {
-              break;
-            }
-          }
-          sf--;
-          tft.setTextColor(ILI9341_WHITE);
-          tft.setCursor(60, 180);
-          tft.print(fBuffer);
-          myFile.getName(fBuffer, 13);
-          tft.setCursor(60, 180);
-          tft.setTextColor(ILI9341_BLACK);
-          tft.print(fBuffer);
-          myFile.close();
+      sf = -1;
+      sd.vwd()->rewind();
+      tft.setTextColor(ILI9341_WHITE);
+      tft.setCursor(60, 130);
+      tft.print(fBuffer);
+      delay(250);
+    }
+
+    if (!digitalRead(BSTART)) {
+      int butCount = 0;
+      while (!digitalRead(BSTART)) {
+        butCount++;
+        if (butCount > 300000) {
+          accept = 1;
+          return sf;
         }
       }
     }
-
-    //tft.setCursor(60, 180);
-    //tft.setTextColor(ILI9341_BLACK);
-    //
-    //tft.print(sf);
-    delay(250);
   }
-  //    if (!digitalRead(BSTART)) {
-  //      int butCount = 0;
-  //      while (!digitalRead(BSTART)) {
-  //        butCount++;
-  //        if (butCount > 200000) {
-  //          accept = 1;
-  //          return sf;
-  //        }
-  //      }
-  //    }
   return sf;
 }
 
@@ -574,12 +554,12 @@ int curPlayBack = 0;
 // Add a button to do SD card recall while in a stopped state
 File file;
 void readSD2(char *fn) {
-  //file = sd.open("KGEM000.txt", FILE_WRITE);
-  file = sd.open(*fn, FILE_WRITE);
+  file = sd.open(fn, FILE_READ);
   if (!file) {
     Serial.println("open failed");
     return;
   }
+  Serial.println("open success");
   file.seek(10);
   uint16_t t1;
   while (file.available() && curPlayBack < playBackSamples) {
@@ -667,7 +647,7 @@ void writeToSD() {
       file[9] = 'x';
       file[10] = 't';
       file[11] = '\0';
-      if (!myFile.open(file, O_RDWR | O_CREAT | O_AT_END)) {
+      if (!myFile.open(file, O_WRITE | O_CREAT)) {
         sd.errorHalt("opening sdcard for write failed");
       }
       Serial.println("opened sd card");
@@ -681,9 +661,6 @@ void writeToSD() {
       int i = 0;
       while (i < totSamp / 8) {
         for (int j = 0; j < 8; j++) {
-          //          if (j != 0) {
-          //            myFile.print(" ");
-          //          }
           myFile.print(data[8 * i + j]);
           myFile.print(" ");
         }
