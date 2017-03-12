@@ -156,6 +156,8 @@ void setup() {
     // Read from the SD card for playback
     //root = sd.open("/");
     //printDirectory(root, 0);
+    // open next file in root.  The volume working directory, vwd, is root
+    // define a serial output stream
     int sf = selectFile();
     //char fn[] = "KGEM000.txt";
     char file[12] = "KGEM";
@@ -168,6 +170,8 @@ void setup() {
     file[9] = 'x';
     file[10] = 't';
     file[11] = '\0';
+    Serial.print("Reading file: ");
+    Serial.println(file);
     readSD2(file);
   }
 }
@@ -176,6 +180,19 @@ void setup() {
 // Select File to Open
 ////////////////////////////////////////////////////
 int selectFile() {
+  ArduinoOutStream cout(Serial);
+  sd.vwd()->rewind();
+  while (myFile.openNext(sd.vwd(), O_READ)) {
+    if (!myFile.isHidden()) {
+      myFile.printName(&Serial);
+      //char fBuffer[13];
+      //myFile.getName(fBuffer, 13);
+      //tft.print(fBuffer);
+      cout << endl;
+    }
+    myFile.close();
+  }
+  cout << "\nDone!" << endl;
   tft.fillScreen(ILI9341_WHITE);
   tft.setRotation(0);
   tft.setTextSize(2);
@@ -187,47 +204,81 @@ int selectFile() {
   tft.setCursor(20, 140);
   tft.print("number to open");
   tft.setCursor(20, 160);
-  tft.print("File Number: ");
+  tft.print("File Name: ");
   tft.setCursor(20, 220);
   tft.print("Hold Start To Continue");
   int sf = 0;
   tft.setCursor(60, 180);
-  tft.print(sf);
+  tft.print("KGEM000.txt");
   int accept = 0;
+  sd.vwd()->rewind();
+  char fBuffer[13];
   while (!accept) {
     if (!digitalRead(22)) {
-      tft.setTextColor(ILI9341_WHITE);
-      tft.setCursor(60, 180);
-      tft.print(sf);
-      tft.setCursor(60, 180);
-      tft.setTextColor(ILI9341_BLACK);
-      sf++;
-      tft.print(sf);
-      delay(500);
+      //tft.print(sf);
+      if (myFile.openNext(sd.vwd(), O_READ)) {
+        while (myFile.isHidden()) {
+          myFile.close();
+          sf++;
+          if (!myFile.openNext(sd.vwd(), O_READ)) {
+            break;
+          }
+        }
+        tft.setTextColor(ILI9341_WHITE);
+        tft.setCursor(60, 180);
+        tft.print(fBuffer);
+        tft.setCursor(60, 180);
+        tft.setTextColor(ILI9341_BLACK);
+        myFile.getName(fBuffer, 13);
+        tft.print(fBuffer);
+        sf++;
+        myFile.close();
+      }
+      //tft.print(sf);
+      delay(250);
     }
     if (!digitalRead(21)) {
       if (sf != 0) {
-        tft.setTextColor(ILI9341_WHITE);
-        tft.setCursor(60, 180);
-        tft.print(sf);
-        tft.setCursor(60, 180);
-        tft.setTextColor(ILI9341_BLACK);
-        sf--;
-        tft.print(sf);
-        delay(500);
-      }
-    }
-    if (!digitalRead(BSTART)) {
-      int butCount = 0;
-      while (!digitalRead(BSTART)) {
-        butCount++;
-        if (butCount > 200000) {
-          accept = 1;
-          return sf;
+        //tft.print(sf);
+        sd.vwd()->seekSet(sf - 1);
+        if (myFile.openNext(sd.vwd(), O_READ)) {
+          while (myFile.isHidden()) {
+            myFile.close();
+            sf--;
+            sd.vwd()->seekSet(sf - 1);
+            if (!myFile.openNext(sd.vwd(), O_READ)) {
+              break;
+            }
+          }
+          sf--;
+          tft.setTextColor(ILI9341_WHITE);
+          tft.setCursor(60, 180);
+          tft.print(fBuffer);
+          myFile.getName(fBuffer, 13);
+          tft.setCursor(60, 180);
+          tft.setTextColor(ILI9341_BLACK);
+          tft.print(fBuffer);
+          myFile.close();
         }
       }
     }
+
+    //tft.setCursor(60, 180);
+    //tft.setTextColor(ILI9341_BLACK);
+    //
+    //tft.print(sf);
+    delay(250);
   }
+  //    if (!digitalRead(BSTART)) {
+  //      int butCount = 0;
+  //      while (!digitalRead(BSTART)) {
+  //        butCount++;
+  //        if (butCount > 200000) {
+  //          accept = 1;
+  //          return sf;
+  //        }
+  //      }
+  //    }
   return sf;
 }
 
@@ -237,7 +288,6 @@ int selectFile() {
 ////////////////////////////////////////////////////
 void printDirectory(File dir, int numTabs) {
   while (true) {
-
     File entry =  dir.openNextFile();
     if (! entry) {
       // no more files
@@ -429,7 +479,7 @@ void loop() {
   } else {
     // Actively running
     interrupts();
-    
+
     // Refresh the graph on rollaround
     if (currSamp == 0 && !playBackMode) {
       drawGrid();
