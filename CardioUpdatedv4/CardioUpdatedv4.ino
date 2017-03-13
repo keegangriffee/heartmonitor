@@ -16,10 +16,44 @@
 #define TFT_DC  9
 #define TFT_CS 20
 
+#include <Arduino.h>
 #include <stdlib.h>
 #include <string.h> // For memset
 #include <Filters.h>
+#include <SPI.h>
+#if not defined (_VARIANT_ARDUINO_DUE_X_) && not defined (_VARIANT_ARDUINO_ZERO_)
+#include <SoftwareSerial.h>
+#endif
 
+#include "Adafruit_BLE.h"
+#include "Adafruit_BluefruitLE_SPI.h"
+#include "Adafruit_BluefruitLE_UART.h"
+
+#include "BluefruitConfig.h"
+
+//////////////////////////////////////////////////////////
+// Bluetooth Configuration
+//////////////////////////////////////////////////////////
+int enableBluetooth = 1;
+
+/* ...hardware SPI, using SCK/MOSI/MISO hardware SPI pins and then user selected CS/IRQ/RST */
+Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
+
+// A small helper
+//void error(const __FlashStringHelper*err) {
+//  Serial.println(err);
+//  while (1);
+//}
+
+/* The service information */
+
+int32_t hrmServiceId;
+int32_t hrmMeasureCharId;
+int32_t hrmLocationCharId;
+
+///////////////////////////////////////////////////////////
+// Display and SD card setup
+///////////////////////////////////////////////////////////
 #include "SPI.h"
 #include "ILI9341_t3.h"
 
@@ -111,9 +145,13 @@ int startTime;
 //////////////////////////////////////////////////////
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   // Don't begin until Serial is active
   while (!Serial) {}
+  if (enableBluetooth) {
+    // Initialize Bluetooth
+    initializeBluetooth();
+  }
   // Setup the pin for capturing heartbeat data
   pinMode(A3, INPUT);
   // Pin for start/stop button
@@ -176,6 +214,84 @@ void setup() {
 }
 
 ////////////////////////////////////////////////////
+// Bluetooth HRM Setup
+////////////////////////////////////////////////////
+void initializeBluetooth(void) {
+  boolean success;
+  Serial.println(F("Adafruit Bluefruit Heart Rate Monitor (HRM) Example"));
+  Serial.println(F("---------------------------------------------------"));
+
+  randomSeed(micros());
+
+  /* Initialise the module */
+  Serial.print(F("Initialising the Bluefruit LE module: "));
+
+  if ( !ble.begin(VERBOSE_MODE) )
+  {
+    Serial.println(F("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?"));
+    while (1);
+  }
+  Serial.println( F("OK!") );
+
+  /* Perform a factory reset to make sure everything is in a known state */
+  Serial.println(F("Performing a factory reset: "));
+  if (! ble.factoryReset() ) {
+    Serial.println(F("Couldn't factory reset"));
+    while (1);
+  }
+
+  /* Disable command echo from Bluefruit */
+  ble.echo(false);
+
+  Serial.println("Requesting Bluefruit info:");
+  /* Print Bluefruit information */
+  ble.info();
+
+  /* Change the device name to make it easier to find */
+  Serial.println(F("Setting device name to 'Bluefruit HRM': "));
+
+  if (! ble.sendCommandCheckOK(F("AT+GAPDEVNAME=Bluefruit HRM")) ) {
+    Serial.println(F("Could not set device name?"));
+    while (1);
+  }
+
+  /* Add the Heart Rate Service definition */
+  /* Service ID should be 1 */
+  Serial.println(F("Adding the Heart Rate Service definition (UUID = 0x180D): "));
+  success = ble.sendCommandWithIntReply( F("AT+GATTADDSERVICE=UUID=0x180D"), &hrmServiceId);
+  if (! success) {
+    Serial.println(F("Could not add HRM service"));
+    while (1);
+  }
+
+  /* Add the Heart Rate Measurement characteristic */
+  /* Chars ID for Measurement should be 1 */
+  Serial.println(F("Adding the Heart Rate Measurement characteristic (UUID = 0x2A37): "));
+  success = ble.sendCommandWithIntReply( F("AT+GATTADDCHAR=UUID=0x2A37, PROPERTIES=0x10, MIN_LEN=2, MAX_LEN=3, VALUE=00-40"), &hrmMeasureCharId);
+  if (! success) {
+    Serial.println(F("Could not add HRM characteristic"));
+  }
+
+  /* Add the Body Sensor Location characteristic */
+  /* Chars ID for Body should be 2 */
+  Serial.println(F("Adding the Body Sensor Location characteristic (UUID = 0x2A38): "));
+  success = ble.sendCommandWithIntReply( F("AT+GATTADDCHAR=UUID=0x2A38, PROPERTIES=0x02, MIN_LEN=1, VALUE=3"), &hrmLocationCharId);
+  if (! success) {
+    Serial.println(F("Could not add BSL characteristic"));
+  }
+
+  /* Add the Heart Rate Service to the advertising data (needed for Nordic apps to detect the service) */
+  Serial.print(F("Adding Heart Rate Service UUID to the advertising payload: "));
+  ble.sendCommandCheckOK( F("AT+GAPSETADVDATA=02-01-06-05-02-0d-18-0a-18") );
+
+  /* Reset the device for the new service setting changes to take effect */
+  Serial.print(F("Performing a SW reset (service changes require a reset): "));
+  ble.reset();
+
+  Serial.println();
+}
+
+////////////////////////////////////////////////////
 // Select File to Open
 ////////////////////////////////////////////////////
 int selectFile() {
@@ -203,7 +319,6 @@ int selectFile() {
   char fBuffer[13];
   while (!accept) {
     if (!digitalRead(22)) {
-      //tft.print(sf);
       if (myFile.openNext(sd.vwd(), O_READ)) {
         while (myFile.isHidden()) {
           myFile.close();
@@ -220,10 +335,8 @@ int selectFile() {
         myFile.getName(fBuffer, 13);
         tft.print(fBuffer);
         sf++;
-        Serial.println(sf);
         myFile.close();
       }
-      //tft.print(sf);
       delay(250);
     }
     if (!digitalRead(21)) {
@@ -254,6 +367,7 @@ int selectFile() {
 // Directory Printing
 ////////////////////////////////////////////////////
 void printDirectory() {
+  Serial.println("The following are files on the SD Card: ");
   ArduinoOutStream cout(Serial);
   sd.vwd()->rewind();
   while (myFile.openNext(sd.vwd(), O_READ)) {
@@ -266,7 +380,7 @@ void printDirectory() {
     }
     myFile.close();
   }
-  cout << "\nDone!" << endl;
+  cout << "\nAll files listed!" << endl;
 }
 
 ////////////////////////////////////////////////////
@@ -439,6 +553,35 @@ void loop() {
   if (!isRun) {
     // Stop display
     noInterrupts();
+    if (playBackMode) {
+      // Scroll Back a screen
+      if (!digitalRead(21)) {
+        currPlayBackSamp = 0;
+        drawGrid();
+        totPlayBack -= (sizeof(samples) / 2);
+        if (totPlayBack < 0) {
+          totPlayBack = 0;
+        }
+        Serial.println(totPlayBack);
+        Serial.println(currPlayBackSamp );
+        delay(500);
+      }
+      // Scroll forward on current data
+      if (!digitalRead(22)) {
+        currPlayBackSamp = (currPlayBackSamp + 1) % (sizeof(samples) / 2);
+        if (currPlayBackSamp == 0) {
+          drawGrid();
+          totPlayBack += (sizeof(samples) / 2);
+        } else if (totPlayBack < playBackSamples) {
+          tft.drawLine((int)(HEIGHT - (HEIGHT * playBack[currPlayBackSamp + totPlayBack - 1] / 3595.0)), currPlayBackSamp * ((double)WIDTH / (sRate * tLen)),
+                       (int)(HEIGHT - (HEIGHT * playBack[currPlayBackSamp + totPlayBack] / 3595.0)), (currPlayBackSamp - 1) * ((double)WIDTH / (sRate * tLen)),
+                       ILI9341_BLUE);
+        } else {
+          currPlayBackSamp = 1;
+        }
+        delay(5);
+      }
+    }
   } else {
     // Actively running
     interrupts();
@@ -448,34 +591,35 @@ void loop() {
       drawGrid();
     }
 
-    if (currPlayBackSamp == 0 && playBackMode) {
-      drawGrid();
-      totPlayBack += (sizeof(samples) / 2);
-    }
-
     // Write to our display the trace
     // scaled to emphasize our valid range
     if (playBackMode) {
-      if (totPlayBack > playBackSamples) {
-        totPlayBack = 0;
-      }
-      for (int i = 0; i < currPlayBackSamp; i++) {
+      for (int i = currPlayBackSamp; i < (sizeof(samples) / 2); i++) {
+        currPlayBackSamp = (currPlayBackSamp + 1) % (sizeof(samples) / 2);
         if (i != 0) {
           tft.drawLine((int)(HEIGHT - (HEIGHT * playBack[i + totPlayBack] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
                        (int)(HEIGHT - (HEIGHT * playBack[i - 1 + totPlayBack] / 3595.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
                        ILI9341_BLUE);
-          //        tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 1, i * ((double)WIDTH / (sRate * tLen)),
-          //                     (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 1, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-          //                     ILI9341_BLACK);
-          //        tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 2, i * ((double)WIDTH / (sRate * tLen)),
-          //                     (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 2, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-          //                     ILI9341_BLACK);
-          //        tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 3, i * ((double)WIDTH / (sRate * tLen)),
-          //                     (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 3, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-          //                     ILI9341_BLACK);
+          uint16_t delayWrite = millis();
+          int flag = 0;
+          while (millis() - delayWrite < 10) {
+            flag = !digitalRead(23);
+            if (flag) {
+              isRun = 0;
+              break;
+            }
+          }
+          if (flag) {
+            break;
+          }
+        } else {
+          drawGrid();
+          totPlayBack += (sizeof(samples) / 2);
+          if (totPlayBack > playBackSamples) {
+            isRun = 0;
+          }
         }
       }
-      currPlayBackSamp = (currPlayBackSamp + 1) % (sizeof(samples) / 2);
     } else {
       for (int i = printSamp; i < currSamp; i++) {
         if (i != 0) {
@@ -516,7 +660,25 @@ void calculateBPM() {
         // to get bpm
         bpm = 60.0 / ((totSamp - lastBeat) * (1.0 / 250));
         lastBeat = totSamp;
-        Serial.println(bpm);
+        //Serial.println(bpm);
+        Serial.print(F("Updating HRM value to "));
+        Serial.print((int)bpm);
+        Serial.println(F(" BPM"));
+
+        if (enableBluetooth) {
+          /* Command is sent when \n (\r) or println is called */
+          /* AT+GATTCHAR=CharacteristicID,value */
+          ble.print( F("AT+GATTCHAR=") );
+          ble.print( hrmMeasureCharId );
+          ble.print( F(",00-") );
+          ble.println((int)bpm, HEX);
+
+          /* Check if command executed OK */
+          if ( !ble.waitForOK() )
+          {
+            Serial.println(F("Failed to get response!"));
+          }
+        }
       } else {
         lastBeat = totSamp;
       }
