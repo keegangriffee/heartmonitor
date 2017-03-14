@@ -118,6 +118,7 @@ int derSamp = 0;
 int lastPeak = 0;
 int currBeat = 0;
 int currQRS = 0;
+float bpm;
 
 // Holds the current calibration bpms
 int calCount = 0;
@@ -162,7 +163,7 @@ float bwFreq = 0.5;
 FilterOnePole bw(HIGHPASS, bwFreq);
 
 // Filter for high frequency noise
-float nFreq = 20;
+float nFreq = 30;
 FilterOnePole nf(LOWPASS, nFreq);
 
 // Define constants
@@ -177,6 +178,8 @@ int startTime;
 
 // Frame numbers for following the flow of the trace
 int frameNum = 0;
+
+int but;
 
 //////////////////////////////////////////////////////
 // SETUP Initialization
@@ -475,19 +478,24 @@ void calibrateMonitor() {
   int startCal = millis();
   // Finish calibrating when the input signal is steady for
   // 5 continuous seconds
-  while (millis() - startCal < 5000) {
-    val = samples[currSamp];
-    if (val < 400 || val > 3800) {
+  while (millis() - startCal < 2000) {
+    calculateBPM();
+    if (bpm <= 30 || bpm >= 150) {
       startCal = millis();
-      tft.setCursor(20, 200);
-      tft.setTextColor(ILI9341_WHITE);
-      tft.print("Stay Still");
     }
-    if (millis() - startCal > 2000) {
-      tft.setCursor(20, 200);
-      tft.setTextColor(ILI9341_BLACK);
-      tft.print("Stay Still");
-    }
+    delay(500);
+    //    val = samples[currSamp];
+    //    if (val < 400 || val > 3800) {
+    //      startCal = millis();
+    //      tft.setCursor(20, 200);
+    //      tft.setTextColor(ILI9341_WHITE);
+    //      tft.print("Stay Still");
+    //    }
+    //    if (millis() - startCal > 2000) {
+    //      tft.setCursor(20, 200);
+    //      tft.setTextColor(ILI9341_BLACK);
+    //      tft.print("Stay Still");
+    //    }
   }
   calCount = 0;
   currSamp = 0;
@@ -499,6 +507,9 @@ void calibrateMonitor() {
   hasPAC = false;
   currPAC = 0;
   derSamp = 0;
+  frameNum = 0;
+  bw = FilterOnePole(HIGHPASS, bwFreq);
+  nf = FilterOnePole(LOWPASS, nFreq);
   Serial.println("Calibrated");
   startTime = millis();
 }
@@ -554,10 +565,8 @@ float lastQRS;
 // and determines whether we are in a running state
 // or stopped state
 void loop() {
-  noInterrupts();
   // Read button value
   but = digitalRead(23);
-  interrupts();
   // Detect start/stop button
   if (but == LOW && prev == HIGH) {
     isRun = !isRun;
@@ -567,6 +576,7 @@ void loop() {
         hasWritten = false;
         currSamp = 0;
         derSamp = 0;
+        printSamp = 0;
         totSamp = 0;
         startTime = millis();
       }
@@ -575,7 +585,6 @@ void loop() {
   prev = but;
   if (!isRun) {
     // Stop display
-    noInterrupts();
     if (playBackMode) {
       // Scroll Back a screen
       if (!digitalRead(21)) {
@@ -615,7 +624,6 @@ void loop() {
     }
   } else {
     // Actively running
-    interrupts();
 
     // Refresh the graph on rollaround
     if (currSamp == 0 && !playBackMode) {
@@ -713,9 +721,10 @@ void loop() {
           //                       ILI9341_BLACK);
         }
       }
+      printSamp = currSamp;
       calculateBPM();
       if (millis() - startTime >= 30 * 1000) {
-        lastBeat = 0;
+        lastPeak = -1;
         isRun = false;
         writeToSD();
       }
@@ -761,7 +770,8 @@ void calculateBPM() {
         } else if (bpm <= 50) {
           hasBrady = true;
         }
-
+        Serial.print("BPM: ");
+        Serial.println(bpm);
         if ((bpm - prevBPM) / bpm >= MAXPACDIF) {
           currPAC++;
           if (currPAC > MAXPAC) {
@@ -1153,13 +1163,23 @@ void pdb_isr() {
 
 void adc0_isr() {
   if (isCal || isRun) {
-    samples[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
+//    Serial.print("ADC0_ISR: ");
+//    Serial.print(isRun);
+//    Serial.print(" | ");
+//    Serial.println(currSamp);
+    int val = nf.input(bw.input(ADC0_RA)) + BASELINE;
+//    Serial.print("CurrSamp: ");
+//    Serial.println(currSamp);
+//    Serial.print("currVal: ");
+//    Serial.println(val);
+    samples[currSamp] = val;//nf.input(bw.input(ADC0_RA)) + BASELINE;
     data[totSamp] = samples[currSamp];
     if (isRun) {
       currSamp = (currSamp + 1) % (sizeof(samples) / 2);
       totSamp++;
     }
   } else {
+//    Serial.println("RIP ADCISR");
     int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
   }
   // Ethan calibrate function
