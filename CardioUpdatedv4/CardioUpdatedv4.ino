@@ -134,7 +134,6 @@ boolean hasBrady = false;
 boolean hasTachy = false;
 boolean hasPAC = false;
 int currPAC = 0;
-//ETHAN!@!!!!!
 
 // Data buffer
 uint16_t samples[sRate * tLen];
@@ -181,12 +180,14 @@ int frameNum = 0;
 
 int but;
 
+boolean drawGraph = true;
+
 //////////////////////////////////////////////////////
 // SETUP Initialization
 //////////////////////////////////////////////////////
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   // Don't begin until Serial is active
   while (!Serial) {}
   // Setup the pin for capturing heartbeat data
@@ -209,7 +210,7 @@ void setup() {
     hasSDcard = true;
     Serial.println("Initialized SD card");
   }
-
+  writeToSD();
   tft.begin();
   chooseMode();
   if (playBackMode == 0) {
@@ -240,7 +241,6 @@ void setup() {
     Serial.print("Reading file: ");
     //Serial.println(file);
     Serial.println(fBuffer);
-    //readSD2(file);
     readSD2(fBuffer);
   }
 }
@@ -467,7 +467,6 @@ void drawGrid() {
 // TODO: Adjust the min and max values based on input
 void calibrateMonitor() {
   isCal = true;
-  int val;
   tft.fillScreen(ILI9341_BLACK);
   tft.setRotation(0);
   tft.setTextSize(3);
@@ -514,50 +513,7 @@ void calibrateMonitor() {
   startTime = millis();
 }
 
-//// Prevents data saving to buffer until the input from the
-//// cardiograph is stabalized
-//// TODO: Adjust the min and max values based on input
-//void calibrateMonitor() {
-//  Serial.println("FUCKING CAL");
-//  isCal = true;
-//  tft.fillScreen(ILI9341_BLACK);
-//  tft.setRotation(0);
-//  tft.setTextSize(3);
-//  tft.setTextColor(ILI9341_WHITE);
-//  tft.setCursor(20, 100);
-//  tft.print("Calibrating");
-//  Serial.println("Calibrating")
-//  int startCal = millis();
-//  // Finish calibrating when the input signal is steady for
-//  // 5 continuous seconds
-//  while (millis() - startCal <= calLen * 1000 && calCount < BEATCAL) {
-//    calculateBPM();
-//  }
-//  if (calCount < BEATCAL) {
-//    Serial.println("DIDNT CALIBRATE");
-//    // Couldn't calibrate, retry
-//    currSamp = 0;
-//    derSamp = 0;
-//    calCount = 0;
-////    calibrateMonitor();    <---------- This is weird
-//  }
-//  calCount = 0;
-//  currSamp = 0;
-//  totSamp = 0;
-//  isCal = false;
-//  isRun = true;
-//  hasTachy = false;
-//  hasBrady = false;
-//  hasPAC = false;
-//  currPAC = 0;
-//  derSamp = 0;
-//  Serial.println("Calibrated");
-//  startTime = millis();
-//}
-
 int lastBeat = -1;
-float bpm;
-int but;
 int lastBPM;
 float lastQRS;
 
@@ -626,13 +582,14 @@ void loop() {
     // Actively running
 
     // Refresh the graph on rollaround
-    if (currSamp == 0 && !playBackMode) {
+    if (drawGraph && !playBackMode) {
       lastPeak = -1;
       qStart = -1;
       sStart = -1;
       derSamp = 0;
       drawGrid();
       frameNum++;
+      drawGraph = false;
     }
 
     // Write to our display the trace
@@ -723,9 +680,10 @@ void loop() {
       }
       printSamp = currSamp;
       calculateBPM();
-      if (millis() - startTime >= 30 * 1000) {
+      if (millis() - startTime >= 10 * 1000) {
         lastPeak = -1;
         isRun = false;
+        Serial.println("About to write");
         writeToSD();
       }
     }
@@ -861,27 +819,6 @@ void calculateBPM() {
 ////////////////////////////////////////////////////////////////
 // SD CARD RECALL
 ////////////////////////////////////////////////////////////////
-// OUTDATED VERSION
-//void readSD() {
-//  int countChar = 0;
-//  if (!myFile.open("KGEM000.txt", O_READ)) {
-//    sd.errorHalt("Opening data file for read failed");
-//  }
-//  Serial.println("Opened file for read");
-//  int data;
-//  while ((data = myFile.read()) >= 0) {
-//
-//    if (data != ',' && countChar > 10) {
-//
-//      Serial.write(data);
-//    } else {
-//      countChar++;
-//    }
-//  }
-//  if (!myFile.remove()) Serial.println("Error file.remove");
-//  //myFile.close();
-//}
-
 int curPlayBack = 0;
 
 // Add a button to do SD card recall while in a stopped state
@@ -964,7 +901,11 @@ int csvReadText(File * file, char* str, size_t size, char delim) {
 // SD Card Writing and Naming Generation
 ///////////////////////////////////////////////////////////////
 void writeToSD() {
-  isRun = false;
+  // Initialize the SD card
+  //noInterrupts();
+  Serial.println("Inside write");
+  Serial.println(hasWritten);
+  Serial.println(isWriting);
   if (!hasWritten && !isWriting) {
     isWriting = true;
     // Write to the SD if it is detected
@@ -973,6 +914,7 @@ void writeToSD() {
       char file[12] = "KGEM";
       char buf[8] = "KGEM";
 
+      Serial.println("About to make name");
       fileGen(buf + 4, currFile);
       fileGen(file + 4, currFile);
       file[7] = '.';
@@ -980,8 +922,11 @@ void writeToSD() {
       file[9] = 'x';
       file[10] = 't';
       file[11] = '\0';
-      sd.remove(file);
-      if (!myFile.open(file, O_WRITE | O_CREAT)) {
+      Serial.println("Name created");
+      Serial.println(file);
+      //sd.remove(file);
+      if (!myFile.open("KGEM000.txt", O_RDWR | O_CREAT)) {
+        Serial.println("Failed");
         sd.errorHalt("opening sdcard for write failed");
       }
       Serial.println("opened sd card");
@@ -990,7 +935,7 @@ void writeToSD() {
       myFile.print(buf);
       myFile.print(",");
       myFile.println(sRate);
-
+      Serial.println("Help 1");
       // Write the data buffer to the file
       int i = 0;
       while (i < totSamp / 8) {
@@ -1001,6 +946,7 @@ void writeToSD() {
         myFile.println();
         i++;
       }
+      Serial.println("Help 2");
       myFile.print("Average BPM: ");
       myFile.println((int)(bpm * 60));
       if (hasBrady) {
@@ -1012,10 +958,15 @@ void writeToSD() {
       if (hasPAC) {
         myFile.println("Premature Atrial Contraction (PAC) detected");
       }
+      Serial.println("Help 3");
       // Print EOF
       myFile.println("EOF");
       // close the file:
-      myFile.close();
+      Serial.println("Help 4");
+      if (!myFile.close()) {
+        Serial.println("Error");
+      }
+      Serial.println("Help 5");
       currFile++;
       Serial.println("done.");
     } else {
@@ -1029,6 +980,7 @@ void writeToSD() {
     totSamp = 0;
     isWriting = false;
   }
+  //interrupts();
 }
 
 // Used to generate increasing file name numbering
@@ -1163,41 +1115,28 @@ void pdb_isr() {
 
 void adc0_isr() {
   if (isCal || isRun) {
-//    Serial.print("ADC0_ISR: ");
-//    Serial.print(isRun);
-//    Serial.print(" | ");
-//    Serial.println(currSamp);
+    //    Serial.print("ADC0_ISR: ");
+    //    Serial.print(isRun);
+    //    Serial.print(" | ");
+    //    Serial.println(currSamp);
     int val = nf.input(bw.input(ADC0_RA)) + BASELINE;
-//    Serial.print("CurrSamp: ");
-//    Serial.println(currSamp);
-//    Serial.print("currVal: ");
-//    Serial.println(val);
+    //    Serial.print("CurrSamp: ");
+    //    Serial.println(currSamp);
+    //    Serial.print("currVal: ");
+    //    Serial.println(val);
     samples[currSamp] = val;//nf.input(bw.input(ADC0_RA)) + BASELINE;
     data[totSamp] = samples[currSamp];
     if (isRun) {
       currSamp = (currSamp + 1) % (sizeof(samples) / 2);
+      if (currSamp == 0) {
+        drawGraph = true;
+      }
       totSamp++;
     }
   } else {
-//    Serial.println("RIP ADCISR");
+    Serial.println("RIP ADCISR");
     int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
   }
-  // Ethan calibrate function
-  //  if (isCal || isRun) {
-  //    int sampLen = 0;
-  //    if (isCal) {
-  //      calBuf[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
-  //      sampLen = calLen * sRate;
-  //    } else {  // Running
-  //      samples[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
-  //      data[totSamp] = samples[currSamp];
-  //      totSamp++;
-  //      sampLen = tLen * sRate;
-  //    }
-  //    currSamp = (currSamp + 1) % sampLen;
-  //  } else {
-  //    int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
-  //  }
 }
 
 ////////////////////////////////////////////////////
