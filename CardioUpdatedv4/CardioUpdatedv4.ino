@@ -28,25 +28,18 @@
 #include "Adafruit_BLE.h"
 #include "Adafruit_BluefruitLE_SPI.h"
 #include "Adafruit_BluefruitLE_UART.h"
-
 #include "BluefruitConfig.h"
 
 //////////////////////////////////////////////////////////
 // Bluetooth Configuration
 //////////////////////////////////////////////////////////
-int enableBluetooth = 1;
+// Enable Bluetooth when == 1
+int enableBluetooth = 0;
 
 /* ...hardware SPI, using SCK/MOSI/MISO hardware SPI pins and then user selected CS/IRQ/RST */
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
-// A small helper
-//void error(const __FlashStringHelper*err) {
-//  Serial.println(err);
-//  while (1);
-//}
-
 /* The service information */
-
 int32_t hrmServiceId;
 int32_t hrmMeasureCharId;
 int32_t hrmLocationCharId;
@@ -75,9 +68,13 @@ ILI9341_t3 tft = ILI9341_t3(TFT_CS, TFT_DC);
 
 #define PDB_CH0C1_TOS 0x0100
 #define PDB_CH0C1_EN 0x01
-#define BSTART 23
-#define BDOWN 21
-#define BUP 22
+
+////////////////////////////////////////////
+// Button definitions
+////////////////////////////////////////////
+#define BSTART 23  // Start/Stop Button
+#define BDOWN 21  // Scroll Left/Back
+#define BUP 22  // Scroll right/up option
 
 
 ////////////////////////////////////////////
@@ -140,6 +137,15 @@ FilterOnePole nf(LOWPASS, nFreq);
 // Used for autostopping after 30 seconds of runtime
 int startTime;
 
+// Frame numbers for following the flow of the trace
+int frameNum = 0;
+
+//////////////////////////////////////////////////////
+// Detection Flags for Displaying to File and Screen
+/////////////////////////////////////////////////////
+int tachycardia = 0;
+int brachycardia = 0;
+
 //////////////////////////////////////////////////////
 // SETUP Initialization
 //////////////////////////////////////////////////////
@@ -192,14 +198,11 @@ void setup() {
     tft.begin();
   } else {
     // Read from the SD card for playback
-    //root = sd.open("/");
-    //printDirectory(root, 0);
     // open next file in root.  The volume working directory, vwd, is root
     // define a serial output stream
     int sf = selectFile();
     char file[12] = "KGEM";
     char buf[8] = "KGEM";
-
     fileGen(buf + 4, sf);
     fileGen(file + 4, sf);
     file[7] = '.';
@@ -211,84 +214,6 @@ void setup() {
     Serial.println(file);
     readSD2(file);
   }
-}
-
-////////////////////////////////////////////////////
-// Bluetooth HRM Setup
-////////////////////////////////////////////////////
-void initializeBluetooth(void) {
-  boolean success;
-  Serial.println(F("Adafruit Bluefruit Heart Rate Monitor (HRM) Example"));
-  Serial.println(F("---------------------------------------------------"));
-
-  randomSeed(micros());
-
-  /* Initialise the module */
-  Serial.print(F("Initialising the Bluefruit LE module: "));
-
-  if ( !ble.begin(VERBOSE_MODE) )
-  {
-    Serial.println(F("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?"));
-    while (1);
-  }
-  Serial.println( F("OK!") );
-
-  /* Perform a factory reset to make sure everything is in a known state */
-  Serial.println(F("Performing a factory reset: "));
-  if (! ble.factoryReset() ) {
-    Serial.println(F("Couldn't factory reset"));
-    while (1);
-  }
-
-  /* Disable command echo from Bluefruit */
-  ble.echo(false);
-
-  Serial.println("Requesting Bluefruit info:");
-  /* Print Bluefruit information */
-  ble.info();
-
-  /* Change the device name to make it easier to find */
-  Serial.println(F("Setting device name to 'Bluefruit HRM': "));
-
-  if (! ble.sendCommandCheckOK(F("AT+GAPDEVNAME=Bluefruit HRM")) ) {
-    Serial.println(F("Could not set device name?"));
-    while (1);
-  }
-
-  /* Add the Heart Rate Service definition */
-  /* Service ID should be 1 */
-  Serial.println(F("Adding the Heart Rate Service definition (UUID = 0x180D): "));
-  success = ble.sendCommandWithIntReply( F("AT+GATTADDSERVICE=UUID=0x180D"), &hrmServiceId);
-  if (! success) {
-    Serial.println(F("Could not add HRM service"));
-    while (1);
-  }
-
-  /* Add the Heart Rate Measurement characteristic */
-  /* Chars ID for Measurement should be 1 */
-  Serial.println(F("Adding the Heart Rate Measurement characteristic (UUID = 0x2A37): "));
-  success = ble.sendCommandWithIntReply( F("AT+GATTADDCHAR=UUID=0x2A37, PROPERTIES=0x10, MIN_LEN=2, MAX_LEN=3, VALUE=00-40"), &hrmMeasureCharId);
-  if (! success) {
-    Serial.println(F("Could not add HRM characteristic"));
-  }
-
-  /* Add the Body Sensor Location characteristic */
-  /* Chars ID for Body should be 2 */
-  Serial.println(F("Adding the Body Sensor Location characteristic (UUID = 0x2A38): "));
-  success = ble.sendCommandWithIntReply( F("AT+GATTADDCHAR=UUID=0x2A38, PROPERTIES=0x02, MIN_LEN=1, VALUE=3"), &hrmLocationCharId);
-  if (! success) {
-    Serial.println(F("Could not add BSL characteristic"));
-  }
-
-  /* Add the Heart Rate Service to the advertising data (needed for Nordic apps to detect the service) */
-  Serial.print(F("Adding Heart Rate Service UUID to the advertising payload: "));
-  ble.sendCommandCheckOK( F("AT+GAPSETADVDATA=02-01-06-05-02-0d-18-0a-18") );
-
-  /* Reset the device for the new service setting changes to take effect */
-  Serial.print(F("Performing a SW reset (service changes require a reset): "));
-  ble.reset();
-
-  Serial.println();
 }
 
 ////////////////////////////////////////////////////
@@ -318,7 +243,7 @@ int selectFile() {
   sd.vwd()->rewind();
   char fBuffer[13];
   while (!accept) {
-    if (!digitalRead(22)) {
+    if (!digitalRead(BUP)) {
       if (myFile.openNext(sd.vwd(), O_READ)) {
         while (myFile.isHidden()) {
           myFile.close();
@@ -339,7 +264,7 @@ int selectFile() {
       }
       delay(250);
     }
-    if (!digitalRead(21)) {
+    if (!digitalRead(BDOWN)) {
       sf = -1;
       sd.vwd()->rewind();
       tft.setTextColor(ILI9341_WHITE);
@@ -373,9 +298,6 @@ void printDirectory() {
   while (myFile.openNext(sd.vwd(), O_READ)) {
     if (!myFile.isHidden()) {
       myFile.printName(&Serial);
-      //char fBuffer[13];
-      //myFile.getName(fBuffer, 13);
-      //tft.print(fBuffer);
       cout << endl;
     }
     myFile.close();
@@ -456,8 +378,20 @@ void drawGrid() {
       tft.drawLine(0, i * BOXW, HEIGHT, i * BOXW, ILI9341_RED);
     }
   }
+  tft.setTextColor(ILI9341_BLACK);
+  tft.setRotation(0);
+  tft.setTextSize(3);
+  tft.setCursor(200, 20);
+  tft.print(frameNum);
+  //tft.setCursor(200, 50);
+  //setFont(const ILI9341_t3_font_t &f);
+  
+  //tft.drawRect(200, 300, WIDTH, 60, ILI9341_WHITE);
 }
 
+///////////////////////////////////////////
+// Calibrates the HRM
+///////////////////////////////////////////
 // Prevents data saving to buffer until the input from the
 // cardiograph is stabalized
 // TODO: Adjust the min and max values based on input
@@ -488,42 +422,12 @@ void calibrateMonitor() {
       tft.print("Stay Still");
     }
   }
+  frameNum = 0;
   currSamp = 0;
   totSamp = 0;
   isCal = false;
   Serial.println("Calibrated");
   startTime = millis();
-}
-
-// Used to generate increasing file name numbering
-// to our SD card
-void fileGen(char * buf, int i) {
-  // put your main code here, to run repeatedly:
-  if (i < 1000) {
-    int currSpot = 0;
-    if (i < 100) {
-      buf[currSpot] = '0';
-      currSpot++;
-
-      if (i < 10) {
-        buf[currSpot] = '0';
-        currSpot++;
-      } else {
-        buf[currSpot] = (i / 10) + '0';
-        currSpot++;
-        buf[currSpot] = (i % 10) + '0';
-      }
-    } else {
-      buf[currSpot] = (i / 100) + '0';
-      currSpot++;
-      buf[currSpot] = (i / 10 % 10) + '0';
-      currSpot++;
-    }
-    buf[currSpot] = (i % 10) + '0';
-    currSpot++;
-    buf[currSpot] = '\0';
-    i++;
-  }
 }
 
 int lastBeat = 0;
@@ -557,11 +461,13 @@ void loop() {
       // Scroll Back a screen
       if (!digitalRead(21)) {
         currPlayBackSamp = 0;
-        drawGrid();
         totPlayBack -= (sizeof(samples) / 2);
-        if (totPlayBack < 0) {
+        frameNum--;
+        if (totPlayBack <= 0) {
+          frameNum = 0;
           totPlayBack = 0;
         }
+        drawGrid();
         Serial.println(totPlayBack);
         Serial.println(currPlayBackSamp );
         delay(500);
@@ -570,8 +476,9 @@ void loop() {
       if (!digitalRead(22)) {
         currPlayBackSamp = (currPlayBackSamp + 1) % (sizeof(samples) / 2);
         if (currPlayBackSamp == 0) {
-          drawGrid();
           totPlayBack += (sizeof(samples) / 2);
+          frameNum++;
+          drawGrid();
         } else if (totPlayBack < playBackSamples) {
           tft.drawLine((int)(HEIGHT - (HEIGHT * playBack[currPlayBackSamp + totPlayBack - 1] / 3595.0)), currPlayBackSamp * ((double)WIDTH / (sRate * tLen)),
                        (int)(HEIGHT - (HEIGHT * playBack[currPlayBackSamp + totPlayBack] / 3595.0)), (currPlayBackSamp - 1) * ((double)WIDTH / (sRate * tLen)),
@@ -581,6 +488,11 @@ void loop() {
         }
         delay(5);
       }
+      but = digitalRead(23);
+      if (but == LOW && prev == HIGH) {
+        isRun = 1;
+      }
+      prev = but;
     }
   } else {
     // Actively running
@@ -589,6 +501,7 @@ void loop() {
     // Refresh the graph on rollaround
     if (currSamp == 0 && !playBackMode) {
       drawGrid();
+      frameNum++;
     }
 
     // Write to our display the trace
@@ -603,24 +516,36 @@ void loop() {
           uint16_t delayWrite = millis();
           int flag = 0;
           while (millis() - delayWrite < 10) {
-            flag = !digitalRead(23);
-            if (flag) {
+            but = digitalRead(23);
+            if (but == LOW && prev == HIGH) {
               isRun = 0;
+            }
+            prev = but;
+            if (!isRun) {
               break;
             }
           }
-          if (flag) {
+          if (!isRun) {
             break;
           }
         } else {
-          drawGrid();
           totPlayBack += (sizeof(samples) / 2);
+          frameNum++;
           if (totPlayBack > playBackSamples) {
             isRun = 0;
           }
+          drawGrid();
         }
       }
     } else {
+      if (tachycardia) {
+        tft.setCursor(0, 0);
+        tft.print(0);
+      }
+      if (brachycardia) {
+        tft.setCursor(0, 0);
+        tft.print(0);
+      }
       for (int i = printSamp; i < currSamp; i++) {
         if (i != 0) {
           tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
@@ -637,7 +562,7 @@ void loop() {
                        ILI9341_BLACK);
         }
       }
-      calculateBPM();
+      //calculateBPM();
       if (millis() - startTime >= 10 * 1000) {
         lastBeat = 0;
         isRun = false;
@@ -790,7 +715,7 @@ int csvReadText(File * file, char* str, size_t size, char delim) {
 }
 
 ///////////////////////////////////////////////////////////////
-// SD Card Writing
+// SD Card Writing and Naming Generation
 ///////////////////////////////////////////////////////////////
 void writeToSD() {
   isRun = false;
@@ -829,6 +754,14 @@ void writeToSD() {
         myFile.println();
         i++;
       }
+      if (brachycardia) {
+        myFile.println("Brachycardia detected");
+      }
+      if (tachycardia) {
+        myFile.println("Tachycardia detected");
+      }
+      myFile.print("Average BPM: ");
+      myFile.print(bpm);
       // Print EOF
       myFile.println("EOF");
       // close the file:
@@ -846,8 +779,42 @@ void writeToSD() {
     totSamp = 0;
     isWriting = false;
   }
-
 }
+
+// Used to generate increasing file name numbering
+// to our SD card or recalling a previous file name
+void fileGen(char * buf, int i) {
+  // put your main code here, to run repeatedly:
+  if (i < 1000) {
+    int currSpot = 0;
+    if (i < 100) {
+      buf[currSpot] = '0';
+      currSpot++;
+
+      if (i < 10) {
+        buf[currSpot] = '0';
+        currSpot++;
+      } else {
+        buf[currSpot] = (i / 10) + '0';
+        currSpot++;
+        buf[currSpot] = (i % 10) + '0';
+      }
+    } else {
+      buf[currSpot] = (i / 100) + '0';
+      currSpot++;
+      buf[currSpot] = (i / 10 % 10) + '0';
+      currSpot++;
+    }
+    buf[currSpot] = (i % 10) + '0';
+    currSpot++;
+    buf[currSpot] = '\0';
+    i++;
+  }
+}
+
+///////////////////////////////////////////////////
+// PDB and ADC Configuration and ISR's
+//////////////////////////////////////////////////
 
 static const uint8_t channel2sc1a[] = {
   5, 14, 8, 9, 13, 12, 6, 7, 15, 4,
@@ -955,4 +922,84 @@ void adc0_isr() {
   } else {
     int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
   }
+}
+
+////////////////////////////////////////////////////
+// Bluetooth HRM Setup
+////////////////////////////////////////////////////
+void initializeBluetooth(void) {
+  boolean success;
+  Serial.println(F("Adafruit Bluefruit Heart Rate Monitor (HRM) Example"));
+  Serial.println(F("---------------------------------------------------"));
+
+  randomSeed(micros());
+
+  /* Initialise the module */
+  Serial.print(F("Initialising the Bluefruit LE module: "));
+
+  if ( !ble.begin(VERBOSE_MODE) )
+  {
+    Serial.println(F("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?"));
+    while (1);
+  }
+  Serial.println( F("OK!") );
+
+  /* Perform a factory reset to make sure everything is in a known state */
+  Serial.println(F("Performing a factory reset: "));
+  if (! ble.factoryReset() ) {
+    Serial.println(F("Couldn't factory reset"));
+    while (! ble.factoryReset() ) {
+      Serial.println(F("Couldn't factory reset"));
+    }
+  }
+
+  /* Disable command echo from Bluefruit */
+  ble.echo(false);
+
+  Serial.println("Requesting Bluefruit info:");
+  /* Print Bluefruit information */
+  ble.info();
+
+  /* Change the device name to make it easier to find */
+  Serial.println(F("Setting device name to 'KGEM HRM': "));
+
+  if (! ble.sendCommandCheckOK(F("AT+GAPDEVNAME=KGEM HRM")) ) {
+    Serial.println(F("Could not set device name?"));
+    while (1);
+  }
+
+  /* Add the Heart Rate Service definition */
+  /* Service ID should be 1 */
+  Serial.println(F("Adding the Heart Rate Service definition (UUID = 0x180D): "));
+  success = ble.sendCommandWithIntReply( F("AT+GATTADDSERVICE=UUID=0x180D"), &hrmServiceId);
+  if (! success) {
+    Serial.println(F("Could not add HRM service"));
+    while (1);
+  }
+
+  /* Add the Heart Rate Measurement characteristic */
+  /* Chars ID for Measurement should be 1 */
+  Serial.println(F("Adding the Heart Rate Measurement characteristic (UUID = 0x2A37): "));
+  success = ble.sendCommandWithIntReply( F("AT+GATTADDCHAR=UUID=0x2A37, PROPERTIES=0x10, MIN_LEN=2, MAX_LEN=3, VALUE=00-40"), &hrmMeasureCharId);
+  if (! success) {
+    Serial.println(F("Could not add HRM characteristic"));
+  }
+
+  /* Add the Body Sensor Location characteristic */
+  /* Chars ID for Body should be 2 */
+  Serial.println(F("Adding the Body Sensor Location characteristic (UUID = 0x2A38): "));
+  success = ble.sendCommandWithIntReply( F("AT+GATTADDCHAR=UUID=0x2A38, PROPERTIES=0x02, MIN_LEN=1, VALUE=3"), &hrmLocationCharId);
+  if (! success) {
+    Serial.println(F("Could not add BSL characteristic"));
+  }
+
+  /* Add the Heart Rate Service to the advertising data (needed for Nordic apps to detect the service) */
+  Serial.print(F("Adding Heart Rate Service UUID to the advertising payload: "));
+  ble.sendCommandCheckOK( F("AT+GAPSETADVDATA=02-01-06-05-02-0d-18-0a-18") );
+
+  /* Reset the device for the new service setting changes to take effect */
+  Serial.print(F("Performing a SW reset (service changes require a reset): "));
+  ble.reset();
+
+  Serial.println();
 }
