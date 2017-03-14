@@ -191,7 +191,7 @@ int brachycardia = 0;
 void setup() {
   Serial.begin(115200);
   // Don't begin until Serial is active
-  //while (!Serial) {}
+  while (!Serial) {}
   if (enableBluetooth) {
     // Initialize Bluetooth
     initializeBluetooth();
@@ -289,14 +289,16 @@ int selectFile() {
             break;
           }
         }
-        tft.setTextColor(ILI9341_WHITE);
-        tft.setCursor(60, 130);
-        tft.print(fBuffer);
-        tft.setCursor(60, 130);
-        tft.setTextColor(ILI9341_BLACK);
-        myFile.getName(fBuffer, 13);
-        tft.print(fBuffer);
-        sf++;
+        if (fBuffer[11] == 't') {
+          tft.setTextColor(ILI9341_WHITE);
+          tft.setCursor(60, 130);
+          tft.print(fBuffer);
+          tft.setCursor(60, 130);
+          tft.setTextColor(ILI9341_BLACK);
+          myFile.getName(fBuffer, 13);
+          tft.print(fBuffer);
+          sf++;
+        }
         myFile.close();
       }
       delay(250);
