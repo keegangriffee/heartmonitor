@@ -179,12 +179,6 @@ int startTime;
 int frameNum = 0;
 
 //////////////////////////////////////////////////////
-// Detection Flags for Displaying to File and Screen
-/////////////////////////////////////////////////////
-int tachycardia = 0;
-int brachycardia = 0;
-
-//////////////////////////////////////////////////////
 // SETUP Initialization
 //////////////////////////////////////////////////////
 
@@ -192,10 +186,6 @@ void setup() {
   Serial.begin(115200);
   // Don't begin until Serial is active
   while (!Serial) {}
-  if (enableBluetooth) {
-    // Initialize Bluetooth
-    initializeBluetooth();
-  }
   // Setup the pin for capturing heartbeat data
   pinMode(A3, INPUT);
   // Pin for start/stop button
@@ -225,6 +215,11 @@ void setup() {
     Serial.println("Play Back Mode Selected");
   }
   if (!playBackMode) {
+    enableBluetooth = askBluetooth();
+    if (enableBluetooth) {
+      // Initialize Bluetooth
+      initializeBluetooth();
+    }
     // Begin collecting data
     adcInit();
     pdbInit();
@@ -237,26 +232,20 @@ void setup() {
     // Read from the SD card for playback
     // open next file in root.  The volume working directory, vwd, is root
     // define a serial output stream
-    int sf = selectFile();
-    char file[12] = "KGEM";
-    char buf[8] = "KGEM";
-    fileGen(buf + 4, sf);
-    fileGen(file + 4, sf);
-    file[7] = '.';
-    file[8] = 't';
-    file[9] = 'x';
-    file[10] = 't';
-    file[11] = '\0';
+    char fBuffer[13];
+    selectFile(fBuffer);
     Serial.print("Reading file: ");
-    Serial.println(file);
-    readSD2(file);
+    //Serial.println(file);
+    Serial.println(fBuffer);
+    //readSD2(file);
+    readSD2(fBuffer);
   }
 }
 
 ////////////////////////////////////////////////////
 // Select File to Open
 ////////////////////////////////////////////////////
-int selectFile() {
+void selectFile(char* fBuffer) {
   printDirectory();
   tft.fillScreen(ILI9341_WHITE);
   tft.setRotation(0);
@@ -274,37 +263,37 @@ int selectFile() {
   tft.print("Hold Start To");
   tft.setCursor(20, 220);
   tft.print("Continue");
-  int sf = -1;
   tft.setCursor(60, 130);
   int accept = 0;
   sd.vwd()->rewind();
-  char fBuffer[13];
   while (!accept) {
     if (!digitalRead(BUP)) {
+      bool flag = false;
       if (myFile.openNext(sd.vwd(), O_READ)) {
         while (myFile.isHidden()) {
           myFile.close();
           if (!myFile.openNext(sd.vwd(), O_READ)) {
-            sf--;
+            flag = true;
             break;
           }
         }
-        if (fBuffer[11] == 't') {
+        if (!flag) {
           tft.setTextColor(ILI9341_WHITE);
           tft.setCursor(60, 130);
           tft.print(fBuffer);
           tft.setCursor(60, 130);
           tft.setTextColor(ILI9341_BLACK);
           myFile.getName(fBuffer, 13);
-          tft.print(fBuffer);
-          sf++;
+          if (fBuffer[10] == 't') {
+            tft.print(fBuffer);
+            //sf++;
+            myFile.close();
+          }
         }
-        myFile.close();
       }
       delay(250);
     }
     if (!digitalRead(BDOWN)) {
-      sf = -1;
       sd.vwd()->rewind();
       tft.setTextColor(ILI9341_WHITE);
       tft.setCursor(60, 130);
@@ -318,12 +307,11 @@ int selectFile() {
         butCount++;
         if (butCount > 300000) {
           accept = 1;
-          return sf;
+          break;
         }
       }
     }
   }
-  return sf;
 }
 
 
@@ -393,6 +381,45 @@ void chooseMode() {
 }
 
 ///////////////////////////////////////////////
+// Enable Bluetooth Prompt
+///////////////////////////////////////////////
+int askBluetooth() {
+  tft.fillScreen(ILI9341_WHITE);
+  tft.setRotation(0);
+  tft.setTextSize(3);
+  tft.setTextColor(ILI9341_BLACK);
+  tft.fillScreen(ILI9341_WHITE);
+  tft.setCursor(20, 100);
+  tft.print("Bluetooth:");
+  while (1) {
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(20, 140);
+    tft.print("OFF [Y]");
+    tft.setTextColor(ILI9341_BLACK);
+    tft.setCursor(20, 140);
+    tft.print("ON [Y]");
+    delay(500);
+    while (digitalRead(22) && digitalRead(21)) {
+      if (!digitalRead(23)) {
+        return 1;
+      }
+    }
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setCursor(20, 140);
+    tft.print("ON [Y]");
+    tft.setTextColor(ILI9341_BLACK);
+    tft.setCursor(20, 140);
+    tft.print("OFF [Y]");
+    delay(500);
+    while (digitalRead(22) && digitalRead(21)) {
+      if (!digitalRead(23)) {
+        return 0;
+      }
+    }
+  }
+}
+
+///////////////////////////////////////////////
 // Draws the grid
 ///////////////////////////////////////////////
 // Draws the red checkered grid on the display
@@ -405,7 +432,7 @@ void drawGrid() {
   // Draws the grid
   tft.fillScreen(ILI9341_WHITE);
   for (int i = 0; i < HLINES; i++) {
-    if (i % 5 == 0) {
+    if (i % 6 == 0) {
       for (int j = 0; j < 3; j++) {
         tft.drawLine(i * BOXW + j, 0, i * BOXW + j, WIDTH, ILI9341_RED);
       }
@@ -414,7 +441,7 @@ void drawGrid() {
     }
   }
   for (int i = 0; i < VLINES; i++) {
-    if (i % 5 == 0) {
+    if (i % 6 == 0) {
       for (int j = 0; j < 3; j++) {
         tft.drawLine(0, i * BOXW + j, HEIGHT, i * BOXW + j, ILI9341_RED);
       }
@@ -427,9 +454,6 @@ void drawGrid() {
   tft.setTextSize(3);
   tft.setCursor(200, 20);
   tft.print(frameNum);
-  //tft.setCursor(200, 50);
-  //setFont(const ILI9341_t3_font_t &f);
-  //tft.fillRect(0, 0, 50, WIDTH, ILI9341_WHITE);
 }
 
 ///////////////////////////////////////////
@@ -523,6 +547,8 @@ void calibrateMonitor() {
 int lastBeat = -1;
 float bpm;
 int but;
+int lastBPM;
+float lastQRS;
 
 // Displays the trace of the cardiograph
 // and determines whether we are in a running state
@@ -634,26 +660,49 @@ void loop() {
         }
       }
     } else {
+      // Print the updating BPM
       tft.setTextColor(ILI9341_PURPLE);
       tft.setTextSize(2);
+      tft.setCursor(5, 220);
+      tft.print("BPM: ");
+      tft.setTextColor(ILI9341_WHITE);
+      tft.setCursor(60, 220);
+      tft.print(lastBPM);
+      tft.setTextColor(ILI9341_PURPLE);
+      tft.setCursor(60, 220);
+      int printBPM = (int)(bpm * 60);
+      tft.print(printBPM);
+      lastBPM = printBPM;
+      // Print the updating QRS
       tft.setCursor(5, 240);
+      tft.print("QRS: ");
+      tft.setTextColor(ILI9341_WHITE);
+      tft.setCursor(60, 240);
+      tft.print(lastQRS);
+      tft.setTextColor(ILI9341_PURPLE);
+      tft.setCursor(60, 240);
+      float printQRS = qrsTime;
+      tft.print(printQRS);
+      lastQRS = printQRS;
+      tft.setCursor(5, 260);
       if (hasTachy) {
         tft.print("Tachy: X");
       } else {
         tft.print("Tachy: ");
       }
-      tft.setCursor(5, 260);
+      tft.setCursor(5, 280);
       if (hasBrady) {
         tft.print("Brady: X");
       } else {
         tft.print("Brady: ");
       }
-      tft.setCursor(5, 280);
+      tft.setCursor(5, 300);
       if (hasPAC) {
         tft.print("PAC: X");
       } else {
         tft.print("PAC: ");
       }
+
       for (int i = printSamp; i < currSamp; i++) {
         if (i != 0) {
           tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
@@ -661,12 +710,6 @@ void loop() {
                        ILI9341_BLACK);
           //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 1, i * ((double)WIDTH / (sRate * tLen)),
           //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 1, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-          //                       ILI9341_BLACK);
-          //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 2, i * ((double)WIDTH / (sRate * tLen)),
-          //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 2, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-          //                       ILI9341_BLACK);
-          //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 3, i * ((double)WIDTH / (sRate * tLen)),
-          //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 3, (i - 1) * ((double)WIDTH / (sRate * tLen)),
           //                       ILI9341_BLACK);
         }
       }
@@ -715,7 +758,7 @@ void calculateBPM() {
         }
         if (bpm >= 105) {
           hasTachy = true;
-        } else if (bpm <= 55) {
+        } else if (bpm <= 50) {
           hasBrady = true;
         }
 
