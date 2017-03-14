@@ -7,9 +7,8 @@
 // will be saved to an SD card (if available) with the output
 // of the ADC that is used to construct the trace.
 
-// TODO: Add method for asking for switching between playback
-// TODO: Add filebrowsing capabilities
-// TODO: Add button for scrolling through file forward and back
+// TODO: Add method for asking for switching between playback and readback
+// TODO: Fix forward and backward scrolling
 
 // Define pins for using both the display and SD card
 #define SD_CS 10
@@ -97,6 +96,45 @@ int chooseFile = 0;
 
 // Display tLen seconds of data
 const int tLen = 2;
+
+//Ethan!!!~!!!!!
+const int calLen = 30;
+uint16_t calBuf[sRate * calLen];
+uint32_t derBuf[sRate * tLen];
+int derSamp = 0;
+#define THRESHOLD 6000
+#define THRESHOLDS 50
+#define NUMBEATS 3
+#define NUMQRSAVG 4
+#define MINWAIT 200  // Not sensing heartbeats above 150
+#define MAXWAIT 1.5  // Max amount of time to wait for next heartbeat (scaler for )
+#define MAXSSAMP 20  // Max samples to wait before being certain of an S wave
+#define MAXQSAMP 15  // Max samples to searh behind for start of Q wave
+#define BEATCAL 5    // Number of valid bpm's to wait for
+#define MAXPAC 4     // Max number of rapid heartbeat changes before PAC
+#define MAXPACDIF 0.15  // Max percent change for PAC
+
+// Holds the time of the last peak
+int lastPeak = 0;
+int currBeat = 0;
+int currQRS = 0;
+
+// Holds the current calibration bpms
+int calCount = 0;
+
+// Hold data for current time of QRS edges
+int qStart = -1;
+int sStart = -1;
+int sSamples = 0;
+float qrsTime = 0;
+
+// Heart problem variables
+boolean hasBrady = false;
+boolean hasTachy = false;
+boolean hasPAC = false;
+int currPAC = 0;
+//ETHAN!@!!!!!
+
 // Data buffer
 uint16_t samples[sRate * tLen];
 uint16_t data[sRate * 31];
@@ -153,7 +191,7 @@ int brachycardia = 0;
 void setup() {
   Serial.begin(115200);
   // Don't begin until Serial is active
-  while (!Serial) {}
+  //while (!Serial) {}
   if (enableBluetooth) {
     // Initialize Bluetooth
     initializeBluetooth();
@@ -173,7 +211,6 @@ void setup() {
   if (!sd.begin(SD_CS, SPI_HALF_SPEED)) {
     // Either an error or no SD card was present
     Serial.println("No SD card detected, proceeding...");
-    // sd.initErrorHalt();
   } else {
     // Success
     hasSDcard = true;
@@ -358,6 +395,11 @@ void chooseMode() {
 ///////////////////////////////////////////////
 // Draws the red checkered grid on the display
 void drawGrid() {
+  // ETHAN
+  for (int i = 0; i < 5; i++) {
+    derBuf[i] = 0;
+  }
+  // ETHAN
   // Draws the grid
   tft.fillScreen(ILI9341_WHITE);
   for (int i = 0; i < HLINES; i++) {
@@ -385,8 +427,7 @@ void drawGrid() {
   tft.print(frameNum);
   //tft.setCursor(200, 50);
   //setFont(const ILI9341_t3_font_t &f);
-  
-  //tft.drawRect(200, 300, WIDTH, 60, ILI9341_WHITE);
+  //tft.fillRect(0, 0, 50, WIDTH, ILI9341_WHITE);
 }
 
 ///////////////////////////////////////////
@@ -422,22 +463,69 @@ void calibrateMonitor() {
       tft.print("Stay Still");
     }
   }
-  frameNum = 0;
+  calCount = 0;
   currSamp = 0;
   totSamp = 0;
   isCal = false;
+  isRun = true;
+  hasTachy = false;
+  hasBrady = false;
+  hasPAC = false;
+  currPAC = 0;
+  derSamp = 0;
   Serial.println("Calibrated");
   startTime = millis();
 }
 
-int lastBeat = 0;
+//// Prevents data saving to buffer until the input from the
+//// cardiograph is stabalized
+//// TODO: Adjust the min and max values based on input
+//void calibrateMonitor() {
+//  Serial.println("FUCKING CAL");
+//  isCal = true;
+//  tft.fillScreen(ILI9341_BLACK);
+//  tft.setRotation(0);
+//  tft.setTextSize(3);
+//  tft.setTextColor(ILI9341_WHITE);
+//  tft.setCursor(20, 100);
+//  tft.print("Calibrating");
+//  Serial.println("Calibrating")
+//  int startCal = millis();
+//  // Finish calibrating when the input signal is steady for
+//  // 5 continuous seconds
+//  while (millis() - startCal <= calLen * 1000 && calCount < BEATCAL) {
+//    calculateBPM();
+//  }
+//  if (calCount < BEATCAL) {
+//    Serial.println("DIDNT CALIBRATE");
+//    // Couldn't calibrate, retry
+//    currSamp = 0;
+//    derSamp = 0;
+//    calCount = 0;
+////    calibrateMonitor();    <---------- This is weird
+//  }
+//  calCount = 0;
+//  currSamp = 0;
+//  totSamp = 0;
+//  isCal = false;
+//  isRun = true;
+//  hasTachy = false;
+//  hasBrady = false;
+//  hasPAC = false;
+//  currPAC = 0;
+//  derSamp = 0;
+//  Serial.println("Calibrated");
+//  startTime = millis();
+//}
+
+int lastBeat = -1;
 float bpm;
+int but;
 
 // Displays the trace of the cardiograph
 // and determines whether we are in a running state
 // or stopped state
 void loop() {
-  int but;
   noInterrupts();
   // Read button value
   but = digitalRead(23);
@@ -449,6 +537,9 @@ void loop() {
       if (!playBackMode) {
         calibrateMonitor();
         hasWritten = false;
+        currSamp = 0;
+        derSamp = 0;
+        totSamp = 0;
         startTime = millis();
       }
     }
@@ -500,6 +591,10 @@ void loop() {
 
     // Refresh the graph on rollaround
     if (currSamp == 0 && !playBackMode) {
+      lastPeak = -1;
+      qStart = -1;
+      sStart = -1;
+      derSamp = 0;
       drawGrid();
       frameNum++;
     }
@@ -514,11 +609,10 @@ void loop() {
                        (int)(HEIGHT - (HEIGHT * playBack[i - 1 + totPlayBack] / 3595.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
                        ILI9341_BLUE);
           uint16_t delayWrite = millis();
-          int flag = 0;
           while (millis() - delayWrite < 10) {
             but = digitalRead(23);
             if (but == LOW && prev == HIGH) {
-              isRun = 0;
+              isRun = !isRun;
             }
             prev = but;
             if (!isRun) {
@@ -532,38 +626,50 @@ void loop() {
           totPlayBack += (sizeof(samples) / 2);
           frameNum++;
           if (totPlayBack > playBackSamples) {
-            isRun = 0;
+            isRun = false;
           }
           drawGrid();
         }
       }
     } else {
-      if (tachycardia) {
-        tft.setCursor(0, 0);
-        tft.print(0);
+      tft.setTextColor(ILI9341_PURPLE);
+      tft.setTextSize(2);
+      tft.setCursor(5, 240);
+      if (hasTachy) {
+        tft.print("Tachy: X");
+      } else {
+        tft.print("Tachy: ");
       }
-      if (brachycardia) {
-        tft.setCursor(0, 0);
-        tft.print(0);
+      tft.setCursor(5, 260);
+      if (hasBrady) {
+        tft.print("Brady: X");
+      } else {
+        tft.print("Brady: ");
+      }
+      tft.setCursor(5, 280);
+      if (hasPAC) {
+        tft.print("PAC: X");
+      } else {
+        tft.print("PAC: ");
       }
       for (int i = printSamp; i < currSamp; i++) {
         if (i != 0) {
           tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
                        (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
                        ILI9341_BLACK);
-          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 1, i * ((double)WIDTH / (sRate * tLen)),
-                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 1, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-                       ILI9341_BLACK);
-          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 2, i * ((double)WIDTH / (sRate * tLen)),
-                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 2, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-                       ILI9341_BLACK);
-          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 3, i * ((double)WIDTH / (sRate * tLen)),
-                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 3, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-                       ILI9341_BLACK);
+          //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 1, i * ((double)WIDTH / (sRate * tLen)),
+          //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 1, (i - 1) * ((double)WIDTH / (sRate * tLen)),
+          //                       ILI9341_BLACK);
+          //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 2, i * ((double)WIDTH / (sRate * tLen)),
+          //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 2, (i - 1) * ((double)WIDTH / (sRate * tLen)),
+          //                       ILI9341_BLACK);
+          //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 3, i * ((double)WIDTH / (sRate * tLen)),
+          //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 3, (i - 1) * ((double)WIDTH / (sRate * tLen)),
+          //                       ILI9341_BLACK);
         }
       }
-      //calculateBPM();
-      if (millis() - startTime >= 10 * 1000) {
+      calculateBPM();
+      if (millis() - startTime >= 30 * 1000) {
         lastBeat = 0;
         isRun = false;
         writeToSD();
@@ -572,22 +678,56 @@ void loop() {
   }
 }
 
-// TODO: Find a better threshold
-// Potentially try a negative value
+// ETHANS Calculate BPM
 void calculateBPM() {
-  if (totSamp > 0) {
-    int val = data[totSamp];
-    int prevVal = data[totSamp - 1];
-    // Threshold for a heartbeat pulse
-    if (prevVal < 2300 && val >= 2300) {
-      if (lastBeat != 0) {
-        // 60 secs in a min, divide by distance between heartbeats in sec
-        // to get bpm
-        bpm = 60.0 / ((totSamp - lastBeat) * (1.0 / 250));
-        lastBeat = totSamp;
-        //Serial.println(bpm);
+  if (currSamp > 3) {
+    for (int i = derSamp; i < currSamp - 1; i++) {
+      uint16_t *currBuf;
+      float curDer = 0;
+      if (isCal) {
+        currBuf = calBuf;
+      } else {  // Running
+        currBuf = samples;
+      }
+      curDer = 0.1 * (2 * currBuf[i] + currBuf[i - 1] - currBuf[i - 3] - (2 * currBuf[i - 4]));
+      derBuf[i] = pow(curDer, 2);
+
+      // Test for heartbeats
+      int timeDif = i - lastPeak;
+      int valToAdd = -1;
+      if (derBuf[i] > THRESHOLD && timeDif > MINWAIT) {
+        valToAdd = timeDif;
+      } else if (derBuf[i] < THRESHOLD &&  bpm != 0 && timeDif > MAXWAIT * sRate / bpm) {
+        valToAdd = 0;
+      }
+
+      if (valToAdd != -1) {
+        float prevBPM = bpm;
+        if (currBeat < NUMBEATS) {
+          bpm *= currBeat;
+          currBeat++;
+          bpm += valToAdd * (1.0 / sRate);
+          bpm /= currBeat;
+        } else {
+          bpm = ((bpm * NUMBEATS) + (valToAdd  * (1.0 / sRate)) - bpm) / NUMBEATS;
+        }
+        if (bpm >= 105) {
+          hasTachy = true;
+        } else if (bpm <= 55) {
+          hasBrady = true;
+        }
+
+        if ((bpm - prevBPM) / bpm >= MAXPACDIF) {
+          currPAC++;
+          if (currPAC > MAXPAC) {
+            hasPAC = true;
+          }
+        }
+        if (isCal) {
+          calCount++;
+        }
         Serial.print(F("Updating HRM value to "));
-        Serial.print((int)bpm);
+        Serial.print((int)(bpm * 60));
         Serial.println(F(" BPM"));
 
         if (enableBluetooth) {
@@ -596,7 +736,7 @@ void calculateBPM() {
           ble.print( F("AT+GATTCHAR=") );
           ble.print( hrmMeasureCharId );
           ble.print( F(",00-") );
-          ble.println((int)bpm, HEX);
+          ble.println((int)(bpm * 60), HEX);
 
           /* Check if command executed OK */
           if ( !ble.waitForOK() )
@@ -604,9 +744,61 @@ void calculateBPM() {
             Serial.println(F("Failed to get response!"));
           }
         }
-      } else {
-        lastBeat = totSamp;
+        lastPeak = i;
       }
+
+
+      // Test for QRS start/end
+      if (!isCal) {
+        if (qStart == -1 && i >= MAXQSAMP && i <= sRate * tLen - MAXQSAMP) {
+          boolean isValidQStart = true;
+          for (int j = i - 1; j >= i - MAXQSAMP; j--) {
+            if (samples[j] < samples[i]) {
+              isValidQStart = false;
+            }
+          }
+          for (int j = i + 1; j < i + MAXQSAMP; j++) {
+            if (samples[j] > samples[i]) {
+              isValidQStart = false;
+            }
+          }
+
+          if (isValidQStart) {
+            qStart = i;
+            sStart = -1;
+            tft.drawLine(0, (int)(i * ((double)WIDTH / (sRate * tLen))),
+                         HEIGHT, (int)((i - 1) * ((double)WIDTH / (sRate * tLen))),
+                         ILI9341_BLUE);
+          }
+        } else if (derBuf[i] < THRESHOLDS && qStart != -1 && sStart == -1) {
+          // Heartbeat stopped
+          sStart = i;
+          tft.drawLine(0, (int)(i * ((double)WIDTH / (sRate * tLen))),
+                       HEIGHT, (int)((i - 1) * ((double)WIDTH / (sRate * tLen))),
+                       ILI9341_GREEN);
+        }
+        if (derBuf[i] < THRESHOLDS && qStart != -1 && sStart != -1 && lastPeak > qStart) {
+          sSamples++;
+          if (sSamples > MAXSSAMP) {
+            // S start time is correct
+            if (currQRS < NUMQRSAVG) {
+              qrsTime *= currQRS;
+              currQRS++;
+              qrsTime += (sStart - qStart) * (1.0 / sRate);
+              qrsTime /= currQRS;
+            } else {
+              qrsTime = ((qrsTime * NUMQRSAVG) + ((sStart - qStart) * (1.0 / sRate)) - qrsTime) / NUMQRSAVG;
+            }
+            Serial.print("QRS: ");
+            Serial.println(qrsTime);
+            qStart = -1;
+            sStart = -1;
+            sSamples = 0;
+          }
+        }
+      }
+      // Update the derivative samples
+      derSamp = currSamp - 1;
     }
   }
 }
@@ -637,7 +829,6 @@ void calculateBPM() {
 
 int curPlayBack = 0;
 
-// TODO: Play with SD card recall
 // Add a button to do SD card recall while in a stopped state
 File file;
 void readSD2(char *fn) {
@@ -734,6 +925,7 @@ void writeToSD() {
       file[9] = 'x';
       file[10] = 't';
       file[11] = '\0';
+      sd.remove(file);
       if (!myFile.open(file, O_WRITE | O_CREAT)) {
         sd.errorHalt("opening sdcard for write failed");
       }
@@ -754,14 +946,17 @@ void writeToSD() {
         myFile.println();
         i++;
       }
-      if (brachycardia) {
-        myFile.println("Brachycardia detected");
+      myFile.print("Average BPM: ");
+      myFile.println((int)(bpm * 60));
+      if (hasBrady) {
+        myFile.println("Bradycardia detected");
       }
-      if (tachycardia) {
+      if (hasTachy) {
         myFile.println("Tachycardia detected");
       }
-      myFile.print("Average BPM: ");
-      myFile.print(bpm);
+      if (hasPAC) {
+        myFile.println("Premature Atrial Contraction (PAC) detected");
+      }
       // Print EOF
       myFile.println("EOF");
       // close the file:
@@ -922,6 +1117,22 @@ void adc0_isr() {
   } else {
     int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
   }
+  // Ethan calibrate function
+  //  if (isCal || isRun) {
+  //    int sampLen = 0;
+  //    if (isCal) {
+  //      calBuf[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
+  //      sampLen = calLen * sRate;
+  //    } else {  // Running
+  //      samples[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
+  //      data[totSamp] = samples[currSamp];
+  //      totSamp++;
+  //      sampLen = tLen * sRate;
+  //    }
+  //    currSamp = (currSamp + 1) % sampLen;
+  //  } else {
+  //    int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
+  //  }
 }
 
 ////////////////////////////////////////////////////
