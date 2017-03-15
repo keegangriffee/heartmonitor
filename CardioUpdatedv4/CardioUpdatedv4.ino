@@ -7,9 +7,6 @@
 // will be saved to an SD card (if available) with the output
 // of the ADC that is used to construct the trace.
 
-// TODO: Add method for asking for switching between playback and readback
-// TODO: Fix forward and backward scrolling
-
 // Define pins for using both the display and SD card
 #define SD_CS 10
 #define TFT_DC  9
@@ -97,20 +94,22 @@ int chooseFile = 0;
 // Display tLen seconds of data
 const int tLen = 2;
 
-//Ethan!!!~!!!!!
+// Heartbeat detection and QSR detection related
 const int calLen = 30;
 uint16_t calBuf[sRate * calLen];
 uint32_t derBuf[sRate * tLen];
 int derSamp = 0;
-#define THRESHOLD 6000
+#define THRESHOLD 4500
 #define THRESHOLDS 50
 #define NUMBEATS 3
 #define NUMQRSAVG 4
 #define MINWAIT 200  // Not sensing heartbeats above 150
-#define MAXWAIT 1.5  // Max amount of time to wait for next heartbeat (scaler for )
+#define MAXWAIT 2  // Max amount of time to wait for next heartbeat (scaler for bps)
 #define MAXSSAMP 20  // Max samples to wait before being certain of an S wave
 #define MAXQSAMP 15  // Max samples to searh behind for start of Q wave
-#define BEATCAL 5    // Number of valid bpm's to wait for
+#define BEATCAL 5    // Number of valid bps's to wait for
+#define MAXTACHY 4   // Number of tachy's before tachy trigger
+#define MAXBRADY 4   // Number of brady's before brady trigger
 #define MAXPAC 4     // Max number of rapid heartbeat changes before PAC
 #define MAXPACDIF 0.15  // Max percent change for PAC
 
@@ -118,9 +117,8 @@ int derSamp = 0;
 int lastPeak = 0;
 int currBeat = 0;
 int currQRS = 0;
-float bpm;
 
-// Holds the current calibration bpms
+// Holds the current calibration bpss
 int calCount = 0;
 
 // Hold data for current time of QRS edges
@@ -134,6 +132,8 @@ boolean hasBrady = false;
 boolean hasTachy = false;
 boolean hasPAC = false;
 int currPAC = 0;
+int currBrady = 0;
+int currTachy = 0;
 
 // Data buffer
 uint16_t samples[sRate * tLen];
@@ -162,10 +162,10 @@ float bwFreq = 0.5;
 FilterOnePole bw(HIGHPASS, bwFreq);
 
 // Filter for high frequency noise
-float nFreq = 30;
+float nFreq = 20;
 FilterOnePole nf(LOWPASS, nFreq);
 
-// Define constants
+// Screen Constants
 #define WIDTH 320
 #define HEIGHT 240
 #define BOXW 20
@@ -178,14 +178,20 @@ int startTime;
 // Frame numbers for following the flow of the trace
 int frameNum = 0;
 
-int but;
-
+// Used for flagging when to redraw the display
 boolean drawGraph = true;
+
+
+int lastBeat = -1;
+float bps;
+int but;
+int lastbps;
+float lastQRS;
+
 
 //////////////////////////////////////////////////////
 // SETUP Initialization
 //////////////////////////////////////////////////////
-
 void setup() {
   Serial.begin(9600);
   // Don't begin until Serial is active
@@ -198,7 +204,7 @@ void setup() {
   pinMode(21, INPUT_PULLUP);
   pinMode(SD_CS, OUTPUT);
   prev  = HIGH;
-
+  // The starting state of running/stopping
   isRun = digitalRead(23);
 
   // Initialize the SD card
@@ -210,7 +216,7 @@ void setup() {
     hasSDcard = true;
     Serial.println("Initialized SD card");
   }
-  writeToSD();
+
   tft.begin();
   chooseMode();
   if (playBackMode == 0) {
@@ -219,6 +225,7 @@ void setup() {
     Serial.println("Play Back Mode Selected");
   }
   if (!playBackMode) {
+    // Ask for bluetooth
     enableBluetooth = askBluetooth();
     if (enableBluetooth) {
       // Initialize Bluetooth
@@ -234,12 +241,10 @@ void setup() {
     tft.begin();
   } else {
     // Read from the SD card for playback
-    // open next file in root.  The volume working directory, vwd, is root
-    // define a serial output stream
     char fBuffer[13];
+    // Get the file name from file navigation
     selectFile(fBuffer);
     Serial.print("Reading file: ");
-    //Serial.println(file);
     Serial.println(fBuffer);
     readSD2(fBuffer);
   }
@@ -269,6 +274,8 @@ void selectFile(char* fBuffer) {
   tft.setCursor(60, 130);
   int accept = 0;
   sd.vwd()->rewind();
+  // Run until the user chooses a file name
+  // from the SD card
   while (!accept) {
     if (!digitalRead(BUP)) {
       bool flag = false;
@@ -296,6 +303,7 @@ void selectFile(char* fBuffer) {
       }
       delay(250);
     }
+    // Rewind to start of file names
     if (!digitalRead(BDOWN)) {
       sd.vwd()->rewind();
       tft.setTextColor(ILI9341_WHITE);
@@ -303,12 +311,12 @@ void selectFile(char* fBuffer) {
       tft.print(fBuffer);
       delay(250);
     }
-
+    // Accept currently shown file
     if (!digitalRead(BSTART)) {
       int butCount = 0;
       while (!digitalRead(BSTART)) {
         butCount++;
-        if (butCount > 300000) {
+        if (butCount > 350000) {
           accept = 1;
           break;
         }
@@ -427,7 +435,6 @@ int askBluetooth() {
 ///////////////////////////////////////////////
 // Draws the red checkered grid on the display
 void drawGrid() {
-  // ETHAN
   for (int i = 0; i < 5; i++) {
     derBuf[i] = 0;
   }
@@ -467,6 +474,7 @@ void drawGrid() {
 // TODO: Adjust the min and max values based on input
 void calibrateMonitor() {
   isCal = true;
+  int val;
   tft.fillScreen(ILI9341_BLACK);
   tft.setRotation(0);
   tft.setTextSize(3);
@@ -477,24 +485,19 @@ void calibrateMonitor() {
   int startCal = millis();
   // Finish calibrating when the input signal is steady for
   // 5 continuous seconds
-  while (millis() - startCal < 2000) {
-    calculateBPM();
-    if (bpm <= 30 || bpm >= 150) {
+  while (millis() - startCal < 5000) {
+    val = samples[currSamp];
+    if (val < 400 || val > 3800) {
       startCal = millis();
+      tft.setCursor(20, 200);
+      tft.setTextColor(ILI9341_WHITE);
+      tft.print("Stay Still");
     }
-    delay(500);
-    //    val = samples[currSamp];
-    //    if (val < 400 || val > 3800) {
-    //      startCal = millis();
-    //      tft.setCursor(20, 200);
-    //      tft.setTextColor(ILI9341_WHITE);
-    //      tft.print("Stay Still");
-    //    }
-    //    if (millis() - startCal > 2000) {
-    //      tft.setCursor(20, 200);
-    //      tft.setTextColor(ILI9341_BLACK);
-    //      tft.print("Stay Still");
-    //    }
+    if (millis() - startCal > 2000) {
+      tft.setCursor(20, 200);
+      tft.setTextColor(ILI9341_BLACK);
+      tft.print("Stay Still");
+    }
   }
   calCount = 0;
   currSamp = 0;
@@ -507,22 +510,19 @@ void calibrateMonitor() {
   currPAC = 0;
   derSamp = 0;
   frameNum = 0;
-  bw = FilterOnePole(HIGHPASS, bwFreq);
-  nf = FilterOnePole(LOWPASS, nFreq);
+  bps = 70.0 / 60.0;
   Serial.println("Calibrated");
   startTime = millis();
 }
-
-int lastBeat = -1;
-int lastBPM;
-float lastQRS;
 
 // Displays the trace of the cardiograph
 // and determines whether we are in a running state
 // or stopped state
 void loop() {
+  noInterrupts();
   // Read button value
   but = digitalRead(23);
+  interrupts();
   // Detect start/stop button
   if (but == LOW && prev == HIGH) {
     isRun = !isRun;
@@ -532,7 +532,6 @@ void loop() {
         hasWritten = false;
         currSamp = 0;
         derSamp = 0;
-        printSamp = 0;
         totSamp = 0;
         startTime = millis();
       }
@@ -541,6 +540,7 @@ void loop() {
   prev = but;
   if (!isRun) {
     // Stop display
+    noInterrupts();
     if (playBackMode) {
       // Scroll Back a screen
       if (!digitalRead(21)) {
@@ -564,22 +564,23 @@ void loop() {
           frameNum++;
           drawGrid();
         } else if (totPlayBack < playBackSamples) {
-          tft.drawLine((int)(HEIGHT - (HEIGHT * playBack[currPlayBackSamp + totPlayBack - 1] / 3595.0)), currPlayBackSamp * ((double)WIDTH / (sRate * tLen)),
-                       (int)(HEIGHT - (HEIGHT * playBack[currPlayBackSamp + totPlayBack] / 3595.0)), (currPlayBackSamp - 1) * ((double)WIDTH / (sRate * tLen)),
+          tft.drawLine((int)((HEIGHT * playBack[currPlayBackSamp + totPlayBack - 1] / 3095.0)), currPlayBackSamp * ((double)WIDTH / (sRate * tLen)),
+                       (int)((HEIGHT * playBack[currPlayBackSamp + totPlayBack] / 3095.0)), (currPlayBackSamp - 1) * ((double)WIDTH / (sRate * tLen)),
                        ILI9341_BLUE);
         } else {
           currPlayBackSamp = 1;
         }
-        delay(5);
+        delay(10);
       }
       but = digitalRead(23);
       if (but == LOW && prev == HIGH) {
-        isRun = 1;
+        isRun = true;
       }
       prev = but;
     }
   } else {
     // Actively running
+    interrupts();
 
     // Refresh the graph on rollaround
     if (drawGraph && !playBackMode) {
@@ -598,8 +599,8 @@ void loop() {
       for (int i = currPlayBackSamp; i < (sizeof(samples) / 2); i++) {
         currPlayBackSamp = (currPlayBackSamp + 1) % (sizeof(samples) / 2);
         if (i != 0) {
-          tft.drawLine((int)(HEIGHT - (HEIGHT * playBack[i + totPlayBack] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
-                       (int)(HEIGHT - (HEIGHT * playBack[i - 1 + totPlayBack] / 3595.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
+          tft.drawLine((int)((HEIGHT * playBack[i + totPlayBack] / 3095.0)), i * ((double)WIDTH / (sRate * tLen)),
+                       (int)((HEIGHT * playBack[i - 1 + totPlayBack] / 3095.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
                        ILI9341_BLUE);
           uint16_t delayWrite = millis();
           while (millis() - delayWrite < 10) {
@@ -620,24 +621,27 @@ void loop() {
           frameNum++;
           if (totPlayBack > playBackSamples) {
             isRun = false;
+            totPlayBack = 0;
+            frameNum = 0;
+            currPlayBackSamp = 0;
           }
           drawGrid();
         }
       }
     } else {
-      // Print the updating BPM
+      // Print the updating bps
       tft.setTextColor(ILI9341_PURPLE);
       tft.setTextSize(2);
       tft.setCursor(5, 220);
-      tft.print("BPM: ");
+      tft.print("bpm: ");
       tft.setTextColor(ILI9341_WHITE);
       tft.setCursor(60, 220);
-      tft.print(lastBPM);
+      tft.print(lastbps);
       tft.setTextColor(ILI9341_PURPLE);
       tft.setCursor(60, 220);
-      int printBPM = (int)(bpm * 60);
-      tft.print(printBPM);
-      lastBPM = printBPM;
+      int printbps = (int)(bps * 60);
+      tft.print(printbps);
+      lastbps = printbps;
       // Print the updating QRS
       tft.setCursor(5, 240);
       tft.print("QRS: ");
@@ -670,30 +674,25 @@ void loop() {
 
       for (int i = printSamp; i < currSamp; i++) {
         if (i != 0) {
-          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)), i * ((double)WIDTH / (sRate * tLen)),
-                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
+          tft.drawLine((int)((HEIGHT * samples[i] / 3095.0)), i * ((double)WIDTH / (sRate * tLen)),
+                       (int)((HEIGHT * samples[i - 1] / 3095.0)), (i - 1) * ((double)WIDTH / (sRate * tLen)),
                        ILI9341_BLACK);
-          //          tft.drawLine((int)(HEIGHT - (HEIGHT * samples[i] / 3595.0)) + 1, i * ((double)WIDTH / (sRate * tLen)),
-          //                       (int)(HEIGHT - (HEIGHT * samples[i - 1] / 3595.0)) + 1, (i - 1) * ((double)WIDTH / (sRate * tLen)),
-          //                       ILI9341_BLACK);
         }
       }
-      printSamp = currSamp;
-      calculateBPM();
-      if (millis() - startTime >= 10 * 1000) {
-        lastPeak = -1;
+      calculatebps();
+      if (millis() - startTime >= 30 * 1000) {
+        lastBeat = 0;
         isRun = false;
-        Serial.println("About to write");
         writeToSD();
       }
     }
   }
 }
 
-// ETHANS Calculate BPM
-void calculateBPM() {
+// Calculates the bps and different arythmias based on the bps
+void calculatebps() {
   if (currSamp > 3) {
-    for (int i = derSamp; i < currSamp - 1; i++) {
+    for (int i = derSamp; i < currSamp; i++) {
       uint16_t *currBuf;
       float curDer = 0;
       if (isCal) {
@@ -709,30 +708,36 @@ void calculateBPM() {
       int valToAdd = -1;
       if (derBuf[i] > THRESHOLD && timeDif > MINWAIT) {
         valToAdd = timeDif;
-      } else if (derBuf[i] < THRESHOLD &&  bpm != 0 && timeDif > MAXWAIT * sRate / bpm) {
+      } else if ((derBuf[i] < THRESHOLD &&  bps != 0 && timeDif > MAXWAIT * sRate / bps) ||
+        (lastPeak == -1 && i == sRate * tLen - 15)) {
         valToAdd = 0;
       }
 
       if (valToAdd != -1) {
-        float prevBPM = bpm;
+        float prevbps = bps;
         if (currBeat < NUMBEATS) {
-          bpm *= currBeat;
+          bps *= currBeat;
           currBeat++;
-          bpm += valToAdd * (1.0 / sRate);
-          bpm /= currBeat;
+          bps += valToAdd * (1.0 / sRate);
+          bps /= currBeat;
         } else {
-          bpm = ((bpm * NUMBEATS) + (valToAdd  * (1.0 / sRate)) - bpm) / NUMBEATS;
+          bps = ((bps * NUMBEATS) + (valToAdd  * (1.0 / sRate)) - bps) / NUMBEATS;
         }
-        if (bpm >= 105) {
-          hasTachy = true;
-        } else if (bpm <= 50) {
-          hasBrady = true;
+        if (bps * 60 >= 100) {
+          currTachy++;
+          if (currTachy >= MAXTACHY) {
+            hasTachy = true;
+          }
+        } else if (bps * 60 <= 60) {
+          currBrady++;
+          if (currBrady >= MAXBRADY) {
+            hasBrady = true;
+          }
         }
-        Serial.print("BPM: ");
-        Serial.println(bpm);
-        if ((bpm - prevBPM) / bpm >= MAXPACDIF) {
+
+        if ((bps - prevbps) / bps >= MAXPACDIF) {
           currPAC++;
-          if (currPAC > MAXPAC) {
+          if (currPAC >= MAXPAC) {
             hasPAC = true;
           }
         }
@@ -740,8 +745,8 @@ void calculateBPM() {
           calCount++;
         }
         Serial.print(F("Updating HRM value to "));
-        Serial.print((int)(bpm * 60));
-        Serial.println(F(" BPM"));
+        Serial.print((int)(bps * 60));
+        Serial.println(F(" bps"));
 
         if (enableBluetooth) {
           /* Command is sent when \n (\r) or println is called */
@@ -749,7 +754,7 @@ void calculateBPM() {
           ble.print( F("AT+GATTCHAR=") );
           ble.print( hrmMeasureCharId );
           ble.print( F(",00-") );
-          ble.println((int)(bpm * 60), HEX);
+          ble.println((int)(bps * 60), HEX);
 
           /* Check if command executed OK */
           if ( !ble.waitForOK() )
@@ -779,16 +784,10 @@ void calculateBPM() {
           if (isValidQStart) {
             qStart = i;
             sStart = -1;
-            tft.drawLine(0, (int)(i * ((double)WIDTH / (sRate * tLen))),
-                         HEIGHT, (int)((i - 1) * ((double)WIDTH / (sRate * tLen))),
-                         ILI9341_BLUE);
           }
         } else if (derBuf[i] < THRESHOLDS && qStart != -1 && sStart == -1) {
           // Heartbeat stopped
           sStart = i;
-          tft.drawLine(0, (int)(i * ((double)WIDTH / (sRate * tLen))),
-                       HEIGHT, (int)((i - 1) * ((double)WIDTH / (sRate * tLen))),
-                       ILI9341_GREEN);
         }
         if (derBuf[i] < THRESHOLDS && qStart != -1 && sStart != -1 && lastPeak > qStart) {
           sSamples++;
@@ -802,8 +801,7 @@ void calculateBPM() {
             } else {
               qrsTime = ((qrsTime * NUMQRSAVG) + ((sStart - qStart) * (1.0 / sRate)) - qrsTime) / NUMQRSAVG;
             }
-            Serial.print("QRS: ");
-            Serial.println(qrsTime);
+            
             qStart = -1;
             sStart = -1;
             sSamples = 0;
@@ -820,8 +818,7 @@ void calculateBPM() {
 // SD CARD RECALL
 ////////////////////////////////////////////////////////////////
 int curPlayBack = 0;
-
-// Add a button to do SD card recall while in a stopped state
+// Read the HRM data to redisplay on the screen
 File file;
 void readSD2(char *fn) {
   file = sd.open(fn, FILE_READ);
@@ -832,6 +829,7 @@ void readSD2(char *fn) {
   Serial.println("open success");
   file.seek(10);
   uint16_t t1;
+  // Use space seperated list to grab the values
   while (file.available() && curPlayBack < playBackSamples) {
     if (csvReadUint16(&file, &t1, ' ') == ' ') {
       playBack[curPlayBack] = t1;
@@ -900,12 +898,9 @@ int csvReadText(File * file, char* str, size_t size, char delim) {
 ///////////////////////////////////////////////////////////////
 // SD Card Writing and Naming Generation
 ///////////////////////////////////////////////////////////////
+// Write the file name as KGEM with increasing file number
 void writeToSD() {
-  // Initialize the SD card
-  //noInterrupts();
-  Serial.println("Inside write");
-  Serial.println(hasWritten);
-  Serial.println(isWriting);
+  isRun = false;
   if (!hasWritten && !isWriting) {
     isWriting = true;
     // Write to the SD if it is detected
@@ -914,7 +909,6 @@ void writeToSD() {
       char file[12] = "KGEM";
       char buf[8] = "KGEM";
 
-      Serial.println("About to make name");
       fileGen(buf + 4, currFile);
       fileGen(file + 4, currFile);
       file[7] = '.';
@@ -922,11 +916,8 @@ void writeToSD() {
       file[9] = 'x';
       file[10] = 't';
       file[11] = '\0';
-      Serial.println("Name created");
-      Serial.println(file);
-      //sd.remove(file);
-      if (!myFile.open("KGEM000.txt", O_RDWR | O_CREAT)) {
-        Serial.println("Failed");
+      sd.remove(file);
+      if (!myFile.open(file, O_WRITE | O_CREAT)) {
         sd.errorHalt("opening sdcard for write failed");
       }
       Serial.println("opened sd card");
@@ -935,7 +926,7 @@ void writeToSD() {
       myFile.print(buf);
       myFile.print(",");
       myFile.println(sRate);
-      Serial.println("Help 1");
+
       // Write the data buffer to the file
       int i = 0;
       while (i < totSamp / 8) {
@@ -946,9 +937,8 @@ void writeToSD() {
         myFile.println();
         i++;
       }
-      Serial.println("Help 2");
-      myFile.print("Average BPM: ");
-      myFile.println((int)(bpm * 60));
+      myFile.print("Average bps: ");
+      myFile.println((int)(bps * 60));
       if (hasBrady) {
         myFile.println("Bradycardia detected");
       }
@@ -958,15 +948,10 @@ void writeToSD() {
       if (hasPAC) {
         myFile.println("Premature Atrial Contraction (PAC) detected");
       }
-      Serial.println("Help 3");
       // Print EOF
       myFile.println("EOF");
       // close the file:
-      Serial.println("Help 4");
-      if (!myFile.close()) {
-        Serial.println("Error");
-      }
-      Serial.println("Help 5");
+      myFile.close();
       currFile++;
       Serial.println("done.");
     } else {
@@ -980,7 +965,6 @@ void writeToSD() {
     totSamp = 0;
     isWriting = false;
   }
-  //interrupts();
 }
 
 // Used to generate increasing file name numbering
@@ -1115,16 +1099,7 @@ void pdb_isr() {
 
 void adc0_isr() {
   if (isCal || isRun) {
-    //    Serial.print("ADC0_ISR: ");
-    //    Serial.print(isRun);
-    //    Serial.print(" | ");
-    //    Serial.println(currSamp);
-    int val = nf.input(bw.input(ADC0_RA)) + BASELINE;
-    //    Serial.print("CurrSamp: ");
-    //    Serial.println(currSamp);
-    //    Serial.print("currVal: ");
-    //    Serial.println(val);
-    samples[currSamp] = val;//nf.input(bw.input(ADC0_RA)) + BASELINE;
+    samples[currSamp] = nf.input(bw.input(ADC0_RA)) + BASELINE;
     data[totSamp] = samples[currSamp];
     if (isRun) {
       currSamp = (currSamp + 1) % (sizeof(samples) / 2);
@@ -1134,7 +1109,6 @@ void adc0_isr() {
       totSamp++;
     }
   } else {
-    Serial.println("RIP ADCISR");
     int temp = ADC0_RA;  // Resets the ADCISR flag, preventing infinite loops
   }
 }
