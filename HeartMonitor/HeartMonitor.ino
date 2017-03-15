@@ -6,6 +6,15 @@
 // Also every 30 seconds of continuous runtime
 // will be saved to an SD card (if available) with the output
 // of the ADC that is used to construct the trace.
+////////////////////// UPDATES ////////////////////////////////////
+// The heart data is now digitally filtered for a cleaner signal
+// Now allows SD card data readback and ability to
+// scan forwards and backwards through the HRM trace on the display
+// Also now has Bluetooth capabilities to display BPM on your phone
+// Data written to the SD card will include BPM and the arythmias
+// detected during a 30 sec recording
+// Arythmias detected, BPM, and QRS are now displayed on the ECG
+// while it actively records
 
 // Define pins for using both the display and SD card
 #define SD_CS 10
